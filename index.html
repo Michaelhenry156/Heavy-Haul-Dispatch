@@ -422,7 +422,7 @@ function LoadModal(props){
 
       h("div",{className:"space-y-2"},
         h("div",{className:"flex items-center justify-between"},
-          h("span",{className:"text-xs font-medium text-slate-500"},"Driver"+(isNew&&f.driverIds.length>1?"s")+" *"),
+          h("span",{className:"text-xs font-medium text-slate-500"},"Driver"+(isNew&&f.driverIds.length>1?"s":"")+" *"),
           isNew?h("button",{onClick:addDriverRow,className:"text-xs text-teal-700 font-medium flex items-center gap-1"},"＋ Add Driver"):null),
         f.driverIds.map(function(dId,idx){
           var sel=drivers.find(function(d){return d.id===dId;});
