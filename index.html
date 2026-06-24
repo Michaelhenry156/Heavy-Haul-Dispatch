@@ -72,6 +72,24 @@ function statusFromMoves(moves,fb){
 function mapsHref(c){return (c&&c.trim())?"https://www.google.com/maps/search/?api=1&query="+encodeURIComponent(c.trim()):null;}
 function copyText(t){try{var ta=document.createElement("textarea");ta.value=t;ta.style.cssText="position:fixed;opacity:0";document.body.appendChild(ta);ta.focus();ta.select();document.execCommand("copy");document.body.removeChild(ta);}catch(e){if(navigator.clipboard)navigator.clipboard.writeText(t);}}
 
+// password hashing (SHA-256 when available)
+function hashPw(s){
+  return new Promise(function(resolve){
+    try{
+      if(window.crypto&&crypto.subtle){
+        crypto.subtle.digest("SHA-256",new TextEncoder().encode(s)).then(function(buf){
+          var arr=new Uint8Array(buf),out="",i;
+          for(i=0;i<arr.length;i++){out+=("0"+arr[i].toString(16)).slice(-2);}
+          resolve(out);
+        }).catch(function(){resolve(fallbackHash(s));});
+        return;
+      }
+    }catch(e){}
+    resolve(fallbackHash(s));
+  });
+}
+function fallbackHash(s){var hh=0,i;for(i=0;i<s.length;i++){hh=((hh<<5)-hh+s.charCodeAt(i))|0;}return "fb"+(hh>>>0).toString(16);}
+
 function rowToLoad(r){
   return {
     id:r.id, driverId:r.driver_id, date:r.work_date, moveType:r.move_type,
@@ -107,13 +125,16 @@ var db = {
     if(res[3].error) throw new Error("loads: "+res[3].error.message);
     var schedule={};
     (res[2].data||[]).forEach(function(r){schedule[r.driver_id+"|"+r.work_date]={moveType:r.move_type};});
-    var settings={};
-    (res[4].data||[]).forEach(function(r){settings[r.key]=r.value;});
+    var passwords={};
+    (res[4].data||[]).forEach(function(r){if(r.key&&r.key.indexOf("pw:")===0)passwords[r.key]=r.value;});
     return {
       drivers:res[0].data||[], managers:res[1].data||[],
-      schedule:schedule, loads:(res[3].data||[]).map(rowToLoad),
-      dispatchPin:settings.dispatch_pin||""
+      schedule:schedule, loads:(res[3].data||[]).map(rowToLoad), passwords:passwords
     };
+  },
+  getPw: async function(id){
+    try{ var r=await sb.from("settings").select("value").eq("key","pw:"+id).limit(1); return (r.data&&r.data[0])?r.data[0].value:""; }
+    catch(e){ return ""; }
   },
   addDriver:    function(d){return sb.from("drivers").insert({name:d.name,phone:d.phone||"",email:d.email||""});},
   updateDriver: function(id,d){return sb.from("drivers").update({name:d.name,phone:d.phone||"",email:d.email||""}).eq("id",id);},
@@ -126,6 +147,7 @@ var db = {
   updateLoad:   function(id,patch){return sb.from("loads").update(patch).eq("id",id);},
   deleteLoad:   function(id){return sb.from("loads").delete().eq("id",id);},
   setSetting:   function(key,value){return sb.from("settings").upsert({key:key,value:value});},
+  clearSetting: function(key){return sb.from("settings").delete().eq("key",key);},
   wipe: async function(){
     await sb.from("loads").delete().neq("id","00000000-0000-0000-0000-000000000000");
     await sb.from("schedule").delete().neq("work_date","1900-01-01");
@@ -175,60 +197,94 @@ function Tab(props){
     props.ic," ",props.l);
 }
 
-// ---- SetupScreen ----
 function SetupScreen(){
   return h("div",{className:"min-h-screen bg-slate-900 text-slate-200 flex items-center justify-center p-6"},
     h("div",{className:"max-w-md bg-slate-800 rounded-2xl p-6 space-y-3"},
       h("div",{className:"text-2xl"},"🚛 Heavy Haul Dispatch"),
-      h("p",{className:"text-sm"},"Open index.html and paste your Supabase Project URL and anon public key into the two lines at the top, then re-upload."),
-      h("p",{className:"text-xs text-slate-400"},"Find them in Supabase → Project Settings → API.")));
+      h("p",{className:"text-sm"},"Open index.html and paste your Supabase Project URL and anon public key into the two lines at the top, then re-upload.")));
 }
 
-// ---- ErrorScreen ----
 function ErrorScreen(props){
   return h("div",{className:"min-h-screen bg-slate-900 text-white flex items-center justify-center p-6"},
     h("div",{className:"max-w-md bg-slate-800 rounded-2xl p-6 space-y-3"},
       h("div",{className:"text-2xl"},"⚠️ Connection Error"),
       h("p",{className:"text-sm text-slate-300"},"Could not load data from Supabase. Error:"),
       h("div",{className:"bg-slate-900 rounded-lg p-3 text-xs text-red-400 break-all"},props.error),
-      h("p",{className:"text-xs text-slate-400"},"Check your Supabase tables exist and your URL/key are correct."),
       h("button",{onClick:props.onRetry,className:"w-full bg-teal-600 text-white rounded-lg py-2.5 font-medium mt-2"},"Retry")));
 }
 
-// ---- SignIn ----
+// ---- SignIn (Manager / Driver + per-person passwords) ----
 function SignIn(props){
-  var drivers=props.drivers, dispatchPin=props.dispatchPin, onSignIn=props.onSignIn;
-  var s=useState(null); var mode=s[0]; var setMode=s[1];
-  var s2=useState(""); var pin=s2[0]; var setPin=s2[1];
-  var s3=useState(""); var err=s3[0]; var setErr=s3[1];
-  var s4=useState(""); var driverId=s4[0]; var setDriverId=s4[1];
+  var drivers=props.drivers, managers=props.managers, passwords=props.passwords, onSignIn=props.onSignIn;
+  var s1=useState(null); var mode=s1[0]; var setMode=s1[1];            // "manager" | "driver"
+  var s2=useState(""); var selId=s2[0]; var setSelId=s2[1];
+  var s3=useState(""); var pw1=s3[0]; var setPw1=s3[1];
+  var s4=useState(""); var pw2=s4[0]; var setPw2=s4[1];
+  var s5=useState(""); var err=s5[0]; var setErr=s5[1];
+  var s6=useState(false); var busy=s6[0]; var setBusy=s6[1];
+
+  var list = mode==="manager" ? managers : drivers;
+  var hasPw = selId ? !!passwords["pw:"+selId] : false;
+
+  function reset(){ setMode(null); setSelId(""); setPw1(""); setPw2(""); setErr(""); }
+  function back(){ if(selId){ setSelId(""); setPw1(""); setPw2(""); setErr(""); } else { reset(); } }
+
+  async function submit(){
+    if(!selId) return;
+    setBusy(true); setErr("");
+    try{
+      var person = list.find(function(p){return p.id===selId;});
+      var name = person ? person.name : "";
+      var identity = mode==="manager" ? {role:"dispatch", id:selId, name:name} : {role:"driver", driverId:selId, name:name};
+      var hash = await hashPw(pw1);
+      var stored = await db.getPw(selId); // fresh check
+      if(stored){
+        if(hash!==stored){ setErr("Incorrect password. Try again."); setBusy(false); return; }
+      }else{
+        if(pw1.length<4){ setErr("Password must be at least 4 characters."); setBusy(false); return; }
+        if(pw1!==pw2){ setErr("Passwords don't match."); setBusy(false); return; }
+        await db.setSetting("pw:"+selId, hash);
+      }
+      onSignIn(identity);
+    }catch(e){ setErr("Error: "+(e&&e.message?e.message:e)); setBusy(false); }
+  }
+
   return h("div",{className:"min-h-screen bg-slate-900 flex items-center justify-center p-4"},
     h("div",{className:"bg-white rounded-2xl shadow-xl w-full max-w-sm p-6"},
       h("div",{className:"text-center text-3xl mb-1"},"🚛"),
       h("h1",{className:"text-center font-bold text-lg text-slate-800"},"Heavy Haul Dispatch"),
       h("p",{className:"text-center text-xs text-slate-500 mb-5"},"Sign in to continue"),
-      !mode&&h("div",{className:"space-y-2"},
-        h("button",{onClick:function(){setMode("dispatch");},className:"w-full bg-slate-900 text-white rounded-lg py-3 font-medium"},"Dispatch / Management"),
-        h("button",{onClick:function(){setMode("driver");},className:"w-full border-2 border-slate-300 rounded-lg py-3 font-medium text-slate-700"},"I'm a Driver")),
-      mode==="dispatch"&&h("div",{className:"space-y-3"},
-        dispatchPin
-          ?h(Fragment,null,
-              h("label",{className:"text-sm font-medium text-slate-600"},"Enter dispatch PIN"),
-              h("input",{value:pin,onChange:function(e){setPin(e.target.value);},type:"password",inputMode:"numeric",className:"inp"}),
-              err&&h("p",{className:"text-xs text-red-600"},err),
-              h("button",{onClick:function(){pin===dispatchPin?onSignIn({role:"dispatch"}):setErr("Incorrect PIN");},className:"w-full bg-slate-900 text-white rounded-lg py-2.5 font-medium"},"Sign in"))
-          :h("button",{onClick:function(){onSignIn({role:"dispatch"});},className:"w-full bg-slate-900 text-white rounded-lg py-2.5 font-medium"},"Continue as Dispatch"),
-        h("button",{onClick:function(){setMode(null);setErr("");setPin("");},className:"w-full text-sm text-slate-500"},"Back")),
-      mode==="driver"&&h("div",{className:"space-y-3"},
-        drivers.length===0
-          ?h("p",{className:"text-sm text-slate-500 text-center"},"No drivers added yet. Ask dispatch to add you.")
-          :h(Fragment,null,
-              h("label",{className:"text-sm font-medium text-slate-600"},"Select your name"),
-              h("select",{value:driverId,onChange:function(e){setDriverId(e.target.value);},className:"inp"},
-                h("option",{value:""},"— choose —"),
-                drivers.map(function(d){return h("option",{key:d.id,value:d.id},d.name);})),
-              h("button",{disabled:!driverId,onClick:function(){onSignIn({role:"driver",driverId:driverId});},className:"w-full bg-teal-600 disabled:opacity-40 text-white rounded-lg py-2.5 font-medium"},"Sign in")),
-        h("button",{onClick:function(){setMode(null);},className:"w-full text-sm text-slate-500"},"Back"))));
+
+      !mode && h("div",{className:"space-y-2"},
+        h("button",{onClick:function(){setMode("manager");},className:"w-full bg-slate-900 text-white rounded-lg py-3 font-medium"},"Manager"),
+        h("button",{onClick:function(){setMode("driver");},className:"w-full border-2 border-slate-300 rounded-lg py-3 font-medium text-slate-700"},"Driver")),
+
+      mode && h("div",{className:"space-y-3"},
+        // manager bootstrap when none exist
+        mode==="manager"&&managers.length===0 && h(Fragment,null,
+          h("p",{className:"text-sm text-slate-500 text-center"},"No managers added yet. Continue to set up the app, then add managers in the Manage tab."),
+          h("button",{onClick:function(){onSignIn({role:"dispatch",name:"Manager"});},className:"w-full bg-slate-900 text-white rounded-lg py-2.5 font-medium"},"Continue as Manager")),
+
+        mode==="driver"&&drivers.length===0 && h("p",{className:"text-sm text-slate-500 text-center"},"No drivers added yet. Ask a manager to add you."),
+
+        list.length>0 && h(Fragment,null,
+          h("label",{className:"text-sm font-medium text-slate-600"},mode==="manager"?"Select your name (Manager)":"Select your name"),
+          h("select",{value:selId,onChange:function(e){setSelId(e.target.value);setPw1("");setPw2("");setErr("");},className:"inp"},
+            h("option",{value:""},"— choose —"),
+            list.map(function(p){return h("option",{key:p.id,value:p.id},p.name);})),
+
+          selId && !hasPw && h(Fragment,null,
+            h("p",{className:"text-xs text-teal-700 bg-teal-50 rounded-lg px-2.5 py-1.5"},"First time signing in — create a password you'll use from now on."),
+            h("input",{type:"password",value:pw1,onChange:function(e){setPw1(e.target.value);},className:"inp",placeholder:"Create a password"}),
+            h("input",{type:"password",value:pw2,onChange:function(e){setPw2(e.target.value);},className:"inp",placeholder:"Confirm password"})),
+
+          selId && hasPw && h("input",{type:"password",value:pw1,onChange:function(e){setPw1(e.target.value);},className:"inp",placeholder:"Enter your password"}),
+
+          err && h("p",{className:"text-xs text-red-600"},err),
+
+          selId && h("button",{disabled:busy||!pw1,onClick:submit,className:"w-full bg-teal-600 disabled:opacity-40 text-white rounded-lg py-2.5 font-medium"},busy?"…":(hasPw?"Sign in":"Set password & sign in"))),
+
+        h("button",{onClick:back,className:"w-full text-sm text-slate-500"},"Back")));
 }
 
 // ---- App root ----
@@ -239,11 +295,11 @@ function App(){
   var s3=useState({}); var schedule=s3[0]; var setSchedule=s3[1];
   var s4=useState([]); var loads=s4[0]; var setLoads=s4[1];
   var s5=useState([]); var managers=s5[0]; var setManagers=s5[1];
-  var s6=useState(""); var dispatchPin=s6[0]; var setDispatchPin=s6[1];
+  var s6=useState({}); var passwords=s6[0]; var setPasswords=s6[1];
   var s7=useState(true); var loading=s7[0]; var setLoading=s7[1];
   var s8=useState(""); var toast=s8[0]; var setToast=s8[1];
   var s9=useState(""); var dbError=s9[0]; var setDbError=s9[1];
-  var s10=useState(identity?identity.role==="driver"?"myloads":"dispatch":"dispatch"); var view=s10[0]; var setView=s10[1];
+  var s10=useState(identity?(identity.role==="driver"?"myloads":"dispatch"):"dispatch"); var view=s10[0]; var setView=s10[1];
   var s11=useState(null); var installEvt=s11[0]; var setInstallEvt=s11[1];
 
   function showToast(m){setToast(m);setTimeout(function(){setToast("");},1800);}
@@ -254,7 +310,7 @@ function App(){
       var d=await db.fetchAll();
       setDrivers(d.drivers); setManagers(d.managers);
       setSchedule(d.schedule); setLoads(d.loads);
-      setDispatchPin(d.dispatchPin); setDbError("");
+      setPasswords(d.passwords); setDbError("");
     }catch(e){
       console.error(e);
       setDbError(e&&e.message?e.message:String(e));
@@ -289,7 +345,7 @@ function App(){
 
   if(loading) return h("div",{className:"flex flex-col items-center justify-center h-screen text-slate-500 gap-3"},h("div",{className:"text-4xl"},"🚛"),h("div",{className:"text-sm"},"Connecting…"));
   if(dbError) return h(ErrorScreen,{error:dbError,onRetry:function(){refresh(true);}});
-  if(!identity) return h(SignIn,{drivers:drivers,dispatchPin:dispatchPin,onSignIn:signIn});
+  if(!identity) return h(SignIn,{drivers:drivers,managers:managers,passwords:passwords,onSignIn:signIn});
 
   var isDispatch=identity.role==="dispatch";
   return h("div",{className:"min-h-screen bg-slate-100 text-slate-800"},
@@ -298,7 +354,7 @@ function App(){
         h("div",{className:"bg-teal-500 rounded-lg px-2 py-1 text-lg"},"🚛"),
         h("div",{className:"leading-tight"},
           h("div",{className:"font-bold text-sm sm:text-base"},"Heavy Haul Dispatch"),
-          h("div",{className:"text-[11px] text-slate-400"},isDispatch?"Dispatch / Management":driverName(identity.driverId))),
+          h("div",{className:"text-[11px] text-slate-400"},isDispatch?(identity.name?identity.name+" · Manager":"Manager"):driverName(identity.driverId))),
         h("div",{className:"ml-auto flex items-center gap-1"},
           installEvt&&h("button",{onClick:doInstall,className:"text-xs bg-teal-500 rounded-lg px-2 py-1 font-medium"},"Install"),
           h("button",{onClick:function(){refresh(true);},className:"p-2 rounded hover:bg-slate-700",title:"Refresh"},"🔄"),
@@ -318,7 +374,7 @@ function App(){
       isDispatch&&view==="schedule"&&h(ScheduleBoard,{drivers:drivers,schedule:schedule,act:act}),
       isDispatch&&view==="dayrate"&&h(DayRate,{drivers:drivers,schedule:schedule,loads:loads,showToast:showToast}),
       isDispatch&&view==="drivers"&&h(DriversTab,{drivers:drivers,act:act}),
-      isDispatch&&view==="manage"&&h(ManageTab,{managers:managers,dispatchPin:dispatchPin,act:act,showToast:showToast}),
+      isDispatch&&view==="manage"&&h(ManageTab,{managers:managers,drivers:drivers,act:act,showToast:showToast}),
       !isDispatch&&view==="myloads"&&h(MyLoads,{identity:identity,loads:loads,act:act}),
       !isDispatch&&view==="myschedule"&&h(MySchedule,{identity:identity,schedule:schedule})),
     toast&&h("div",{className:"fixed bottom-4 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-sm px-4 py-2 rounded-full shadow-lg z-50"},toast));
@@ -376,7 +432,7 @@ function DispatchBoard(props){
     editing&&h(LoadModal,{drivers:drivers,schedule:schedule,managers:managers,load:editing,onSave:saveLoad,onDelete:delLoad,onClose:function(){setEditing(null);}}));
 }
 
-// ---- LoadModal ----
+// ---- LoadModal (multi-driver) ----
 function LoadModal(props){
   var drivers=props.drivers,schedule=props.schedule,managers=props.managers,load=props.load,onSave=props.onSave,onDelete=props.onDelete,onClose=props.onClose;
   var isNew=!load.id;
@@ -402,12 +458,10 @@ function LoadModal(props){
     var mgr=managers.find(function(m){return m.id===f.assignedById;});
     var base={startFrom:f.startFrom,startTime:f.startTime,date:f.date,moveType:f.moveType,notes:f.notes,assignedBy:mgr?{id:mgr.id,name:mgr.name,phone:mgr.phone||""}:null,moves:f.moves,acknowledged:false};
     if(isNew){
-      // create one assignment per driver
       filledDriverIds.forEach(function(dId){
         onSave(Object.assign({},base,{driverId:dId,status:statusFromMoves(f.moves,"assigned")}));
       });
     } else {
-      // edit keeps the single existing assignment
       onSave(Object.assign({},base,{id:load.id,driverId:filledDriverIds[0],status:statusFromMoves(f.moves,load.status),acknowledged:load.acknowledged}));
     }
   }
@@ -419,11 +473,10 @@ function LoadModal(props){
       h("div",{className:"grid grid-cols-2 gap-2"},
         h(Field,{label:"Date"},h("input",{type:"date",value:f.date,onChange:function(e){set("date",e.target.value);},className:"inp"})),
         h(Field,{label:"Move Type"},h("select",{value:f.moveType,onChange:function(e){set("moveType",e.target.value);},className:"inp"},MOVE_TYPES.map(function(m){return h("option",{key:m.id,value:m.id},m.label);})))),
-
       h("div",{className:"space-y-2"},
         h("div",{className:"flex items-center justify-between"},
           h("span",{className:"text-xs font-medium text-slate-500"},"Driver"+(isNew&&f.driverIds.length>1?"s":"")+" *"),
-          isNew?h("button",{onClick:addDriverRow,className:"text-xs text-teal-700 font-medium flex items-center gap-1"},"＋ Add Driver"):null),
+          isNew?h("button",{onClick:addDriverRow,className:"text-xs text-teal-700 font-medium"},"＋ Add Driver"):null),
         f.driverIds.map(function(dId,idx){
           var sel=drivers.find(function(d){return d.id===dId;});
           return h("div",{key:idx,className:"flex items-center gap-2"},
@@ -434,14 +487,12 @@ function LoadModal(props){
             isNew&&f.driverIds.length>1?h("button",{onClick:function(){removeDriverRow(idx);},className:"text-red-400 shrink-0 p-1"},"✕"):null);
         }),
         isNew&&filledDriverIds.length>1?h("div",{className:"text-[11px] text-teal-700 bg-teal-50 rounded-lg px-2.5 py-1.5"},"✓ Will create "+filledDriverIds.length+" separate assignments — one per driver"):null),
-
       h(Field,{label:"Assigned By *"},
         managers.length===0
           ?h("p",{className:"text-xs text-red-600 border border-dashed border-red-300 rounded-lg p-2 bg-red-50"},"No managers yet — add them in the Manage tab.")
           :h("select",{value:f.assignedById,onChange:function(e){set("assignedById",e.target.value);},className:"inp"},
               h("option",{value:""},"— select manager —"),
               managers.map(function(m){return h("option",{key:m.id,value:m.id},m.name);}))),
-
       h("div",{className:"space-y-3"},
         f.moves.map(function(m,i){
           return h("div",{key:m.id,className:"border-2 border-slate-200 rounded-xl p-3 space-y-3"},
@@ -461,11 +512,10 @@ function LoadModal(props){
             h(LRow,{label:"Move notes (optional):"},h("input",{className:"inp",value:m.notes,onChange:function(e){updMove(m.id,{notes:e.target.value});}})));
         }),
         h("button",{onClick:addMove,className:"w-full border-2 border-dashed border-slate-300 rounded-xl py-2.5 text-sm font-medium text-slate-600"},"＋ Add another move")),
-
       h(Field,{label:"Assignment notes (optional)"},h("textarea",{value:f.notes,onChange:function(e){set("notes",e.target.value);},rows:2,className:"inp",placeholder:"Anything that applies to the whole day"})),
       !canSubmit?h("p",{className:"text-[11px] text-slate-400"},"Select at least one driver and an Assigned By manager to send this assignment."):null,
       h("div",{className:"flex gap-2 pt-1"},
-        h("button",{disabled:!canSubmit,onClick:save,className:"flex-1 bg-teal-600 disabled:opacity-40 text-white rounded-lg py-2.5 font-medium"},isNew?"Assign"+(filledDriverIds.length>1?" ("+filledDriverIds.length+" drivers)":""):"Save"),
+        h("button",{disabled:!canSubmit,onClick:save,className:"flex-1 bg-teal-600 disabled:opacity-40 text-white rounded-lg py-2.5 font-medium"},isNew?("Assign"+(filledDriverIds.length>1?" ("+filledDriverIds.length+" drivers)":"")):"Save"),
         !isNew?h("button",{onClick:function(){onDelete(load.id);},className:"px-3 rounded-lg border-2 border-red-200 text-red-600"},"🗑️"):null)));
 }
 
@@ -585,15 +635,17 @@ function DriverForm(props){
 
 // ---- ManageTab ----
 function ManageTab(props){
-  var managers=props.managers,dispatchPin=props.dispatchPin,act=props.act,showToast=props.showToast;
-  var s1=useState(dispatchPin||""); var pin=s1[0]; var setPin=s1[1];
+  var managers=props.managers,drivers=props.drivers,act=props.act,showToast=props.showToast;
   var s2=useState(""); var mName=s2[0]; var setMName=s2[1];
   var s3=useState(""); var mPhone=s3[0]; var setMPhone=s3[1];
+  var s4=useState(""); var resetId=s4[0]; var setResetId=s4[1];
   function addManager(){if(!mName.trim())return;act(function(){return db.addManager({name:mName.trim(),phone:mPhone.trim()});},"Manager added");setMName("");setMPhone("");}
+  function resetPw(){if(!resetId)return;act(function(){return db.clearSetting("pw:"+resetId);},"Password reset — they'll set a new one next sign-in");setResetId("");}
+  var people = managers.map(function(m){return {id:m.id,label:m.name+" (Manager)"};}).concat(drivers.map(function(d){return {id:d.id,label:d.name+" (Driver)"};}));
   return h("div",{className:"space-y-3 max-w-md"},
     h("div",{className:"bg-white rounded-xl p-4 shadow-sm space-y-3"},
       h("h3",{className:"font-semibold text-slate-700"},"👤 Managers (who can assign)"),
-      h("p",{className:"text-xs text-slate-500"},"These appear in the Assigned By dropdown so drivers know who to contact."),
+      h("p",{className:"text-xs text-slate-500"},"These appear in the Manager sign-in list and the Assigned By dropdown."),
       managers.length>0?h("div",{className:"space-y-1.5"},managers.map(function(m){
         return h("div",{key:m.id,className:"flex items-center gap-2 bg-slate-50 rounded-lg px-3 py-2"},
           h("div",{className:"min-w-0"},
@@ -605,14 +657,18 @@ function ManageTab(props){
         h("input",{value:mName,onChange:function(e){setMName(e.target.value);},className:"inp",placeholder:"Manager name"}),
         h("input",{value:mPhone,onChange:function(e){setMPhone(e.target.value);},className:"inp",placeholder:"Phone (so drivers can call)",inputMode:"tel"}),
         h("button",{onClick:addManager,disabled:!mName.trim(),className:"bg-teal-600 disabled:opacity-40 text-white rounded-lg px-3 py-2 text-sm font-medium"},"＋ Add manager"))),
+
     h("div",{className:"bg-white rounded-xl p-4 shadow-sm space-y-2"},
-      h("h3",{className:"font-semibold text-slate-700"},"⚙️ Dispatch PIN"),
-      h("p",{className:"text-xs text-slate-500"},"Set a PIN so only management can sign in as Dispatch. Leave blank for no PIN."),
-      h("input",{value:pin,onChange:function(e){setPin(e.target.value);},inputMode:"numeric",className:"inp",placeholder:"e.g. 4827"}),
-      h("button",{onClick:function(){act(function(){return db.setSetting("dispatch_pin",pin.trim());},"PIN saved");},className:"bg-slate-900 text-white rounded-lg px-4 py-2 text-sm font-medium"},"Save PIN")),
+      h("h3",{className:"font-semibold text-slate-700"},"🔑 Reset a login password"),
+      h("p",{className:"text-xs text-slate-500"},"If someone forgets their password, reset it here. They'll create a new one the next time they sign in."),
+      h("select",{value:resetId,onChange:function(e){setResetId(e.target.value);},className:"inp"},
+        h("option",{value:""},"— select person —"),
+        people.map(function(p){return h("option",{key:p.id,value:p.id},p.label);})),
+      h("button",{onClick:resetPw,disabled:!resetId,className:"bg-slate-900 disabled:opacity-40 text-white rounded-lg px-4 py-2 text-sm font-medium"},"Reset password")),
+
     h("div",{className:"bg-white rounded-xl p-4 shadow-sm space-y-2 border border-red-100"},
       h("h3",{className:"font-semibold text-red-600"},"⚠️ Reset all data"),
-      h("p",{className:"text-xs text-slate-500"},"Permanently clears drivers, schedule, loads, and settings for the whole team."),
+      h("p",{className:"text-xs text-slate-500"},"Permanently clears drivers, schedule, loads, managers, and passwords for the whole team."),
       h("button",{onClick:function(){if(confirm("Clear ALL dispatch data for everyone? This cannot be undone."))act(function(){return db.wipe();},"All data cleared");},className:"border-2 border-red-200 text-red-600 rounded-lg px-4 py-2 text-sm font-medium"},"Clear everything")));
 }
 
@@ -629,7 +685,6 @@ function LocLine(props){
 // ---- MyLoads ----
 function MyLoads(props){
   var identity=props.identity,loads=props.loads,act=props.act;
-  var s0=useState(null); var loadErr=s0[0]; var setLoadErr=s0[1];
   var my=useMemo(function(){
     try{return loads.filter(function(l){return l.driverId===identity.driverId;});}
     catch(e){return [];}
@@ -638,9 +693,8 @@ function MyLoads(props){
     try{
       my.filter(function(l){return !l.acknowledged&&(l.status||"assigned")!=="completed";})
         .forEach(function(l){db.updateLoad(l.id,{acknowledged:true}).catch(function(){});});
-    }catch(e){console.error("ack error",e);}
+    }catch(e){}
   },[my.length]);
-  if(loadErr) return h("div",{className:"bg-red-50 border border-red-200 rounded-xl p-4 text-sm text-red-700"},"Driver view error: "+loadErr+". Please refresh.");
   var newCount=my.filter(function(l){return !l.acknowledged&&(l.status||"assigned")!=="completed";}).length;
   var active=my.filter(function(l){return (l.status||"assigned")!=="completed";}).sort(function(a,b){return a.date.localeCompare(b.date)||(a.createdAt||0)-(b.createdAt||0);});
   var done=my.filter(function(l){return (l.status||"assigned")==="completed";}).sort(function(a,b){return b.date.localeCompare(a.date);});
