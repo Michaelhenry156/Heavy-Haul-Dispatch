@@ -50,6 +50,15 @@ var MOVE_TYPES = [
 ];
 function mt(id){ return MOVE_TYPES.find(function(m){return m.id===id;}); }
 
+// "Working" = a day a driver marks themselves available/on. Not a move type, so it
+// stays out of MOVE_TYPES (the manager move picker / legend) but renders in schedules.
+var WORKING={id:"working",label:"Working",abbr:"WRK",chip:"bg-teal-100 text-teal-800 border border-teal-300",dot:"bg-teal-300"};
+function schedInfo(id){return id==="working"?WORKING:mt(id);}
+
+// Schedule view ranges, shared by the manager Schedule board and driver My Schedule.
+var RANGES=[{id:"day",label:"Day",days:1},{id:"week",label:"Week",days:7},{id:"2weeks",label:"2 Weeks",days:14},{id:"month",label:"Month",days:30}];
+function rangeDaysOf(id){var r=RANGES.find(function(x){return x.id===id;});return r?r.days:14;}
+
 function toISO(d){var x=new Date(d);return x.getFullYear()+"-"+String(x.getMonth()+1).padStart(2,"0")+"-"+String(x.getDate()).padStart(2,"0");}
 function parseISO(s){var p=s.split("-").map(Number);return new Date(p[0],p[1]-1,p[2]);}
 function todayISO(){return toISO(new Date());}
@@ -62,7 +71,7 @@ function monthKey(iso){return iso.slice(0,7);}
 function monthLabel(mk){var p=mk.split("-").map(Number);return new Date(p[0],p[1]-1,1).toLocaleDateString("en-US",{month:"long",year:"numeric"});}
 
 function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,7);}
-function blankMove(){return {id:uid(),pickupPad:"",pickupLease:"",pickupCoords:"",dropPad:"",dropLease:"",dropCoords:"",notes:"",done:false,doneAt:null};}
+function blankMove(){return {id:uid(),pickupPad:"",pickupLease:"",pickupCoords:"",pickupPin:"",dropPad:"",dropLease:"",dropCoords:"",dropPin:"",notes:"",done:false,doneAt:null};}
 function getMoves(l){return Array.isArray(l.moves)&&l.moves.length?l.moves:[];}
 function statusFromMoves(moves,fb){
   if(moves.length&&moves.every(function(m){return m.done;}))return "completed";
@@ -70,6 +79,7 @@ function statusFromMoves(moves,fb){
   return fb==="completed"?"completed":"assigned";
 }
 function mapsHref(c){return (c&&c.trim())?"https://www.google.com/maps/search/?api=1&query="+encodeURIComponent(c.trim()):null;}
+function pinHref(v){if(!v||!v.trim())return null;var t=v.trim();return /^https?:\/\//i.test(t)?t:("https://www.google.com/maps/search/?api=1&query="+encodeURIComponent(t));}
 function copyText(t){try{var ta=document.createElement("textarea");ta.value=t;ta.style.cssText="position:fixed;opacity:0";document.body.appendChild(ta);ta.focus();ta.select();document.execCommand("copy");document.body.removeChild(ta);}catch(e){if(navigator.clipboard)navigator.clipboard.writeText(t);}}
 
 // password hashing (SHA-256 when available)
@@ -376,7 +386,7 @@ function App(){
       isDispatch&&view==="drivers"&&h(DriversTab,{drivers:drivers,act:act}),
       isDispatch&&view==="manage"&&h(ManageTab,{managers:managers,drivers:drivers,act:act,showToast:showToast}),
       !isDispatch&&view==="myloads"&&h(MyLoads,{identity:identity,loads:loads,act:act}),
-      !isDispatch&&view==="myschedule"&&h(MySchedule,{identity:identity,schedule:schedule})),
+      !isDispatch&&view==="myschedule"&&h(MySchedule,{identity:identity,schedule:schedule,act:act})),
     toast&&h("div",{className:"fixed bottom-4 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-sm px-4 py-2 rounded-full shadow-lg z-50"},toast));
 }
 
@@ -390,9 +400,9 @@ function DispatchBoard(props){
   function saveLoad(data){
     if(data.id){
       var id=data.id; var patch=Object.assign({},data); delete patch.id;
-      act(function(){return db.updateLoad(id,loadToRow(patch));},"Updated");
+      act(function(){return db.updateLoad(id,loadToRow(patch)).then(function(){return db.setSchedule(patch.driverId,patch.date,patch.moveType);});},"Updated");
     } else {
-      act(function(){return db.insertLoad(data);},"Load assigned");
+      act(function(){return db.insertLoad(data).then(function(){return db.setSchedule(data.driverId,data.date,data.moveType);});},"Load assigned");
     }
     setEditing(null);
   }
@@ -503,12 +513,14 @@ function LoadModal(props){
               h("div",{className:"font-bold text-sm text-slate-800"},"(Pickup Location)"),
               h(LRow,{label:"Pad Name:"},h("input",{className:"inp",value:m.pickupPad,onChange:function(e){updMove(m.id,{pickupPad:e.target.value});}})),
               h(LRow,{label:"Lease Road Entrance Coordinates:"},h("input",{className:"inp",value:m.pickupLease,onChange:function(e){updMove(m.id,{pickupLease:e.target.value});},placeholder:"lat, long"})),
-              h(LRow,{label:"Pad Coordinates:"},h("input",{className:"inp",value:m.pickupCoords,onChange:function(e){updMove(m.id,{pickupCoords:e.target.value});},placeholder:"lat, long"}))),
+              h(LRow,{label:"Pad Coordinates:"},h("input",{className:"inp",value:m.pickupCoords,onChange:function(e){updMove(m.id,{pickupCoords:e.target.value});},placeholder:"lat, long"})),
+              h(LRow,{label:"Pin Drop (paste Google Maps link or coordinates):"},h("input",{className:"inp",value:m.pickupPin,onChange:function(e){updMove(m.id,{pickupPin:e.target.value});},placeholder:"https://maps.app.goo.gl/…  or  lat, long"}))),
             h("div",{className:"space-y-2"},
               h("div",{className:"font-bold text-sm text-slate-800"},"(Drop-Off Location)"),
               h(LRow,{label:"Pad Name:"},h("input",{className:"inp",value:m.dropPad,onChange:function(e){updMove(m.id,{dropPad:e.target.value});}})),
               h(LRow,{label:"Lease Road Entrance Coordinates:"},h("input",{className:"inp",value:m.dropLease,onChange:function(e){updMove(m.id,{dropLease:e.target.value});},placeholder:"lat, long"})),
-              h(LRow,{label:"Pad Coordinates:"},h("input",{className:"inp",value:m.dropCoords,onChange:function(e){updMove(m.id,{dropCoords:e.target.value});},placeholder:"lat, long"}))),
+              h(LRow,{label:"Pad Coordinates:"},h("input",{className:"inp",value:m.dropCoords,onChange:function(e){updMove(m.id,{dropCoords:e.target.value});},placeholder:"lat, long"})),
+              h(LRow,{label:"Pin Drop (paste Google Maps link or coordinates):"},h("input",{className:"inp",value:m.dropPin,onChange:function(e){updMove(m.id,{dropPin:e.target.value});},placeholder:"https://maps.app.goo.gl/…  or  lat, long"}))),
             h(LRow,{label:"Move notes (optional):"},h("input",{className:"inp",value:m.notes,onChange:function(e){updMove(m.id,{notes:e.target.value});}})));
         }),
         h("button",{onClick:addMove,className:"w-full border-2 border-dashed border-slate-300 rounded-xl py-2.5 text-sm font-medium text-slate-600"},"＋ Add another move")),
@@ -524,18 +536,23 @@ function ScheduleBoard(props){
   var drivers=props.drivers,schedule=props.schedule,act=props.act;
   var s1=useState(todayISO()); var start=s1[0]; var setStart=s1[1];
   var s2=useState(null); var cell=s2[0]; var setCell=s2[1];
-  var days=useMemo(function(){return Array.from({length:14},function(_,i){return addDays(start,i);});},[start]);
+  var s3=useState("2weeks"); var range=s3[0]; var setRange=s3[1];
+  var nDays=rangeDaysOf(range);
+  var days=useMemo(function(){return Array.from({length:nDays},function(_,i){return addDays(start,i);});},[start,nDays]);
   function setMove(dId,date,moveType){
     if(moveType===null)act(function(){return db.clearSchedule(dId,date);});
     else act(function(){return db.setSchedule(dId,date,moveType);});
     setCell(null);
   }
   return h("div",{className:"space-y-3"},
-    h("div",{className:"bg-white rounded-xl p-3 shadow-sm flex flex-wrap items-center gap-2"},
-      h("button",{onClick:function(){setStart(addDays(start,-7));},className:"p-1.5 rounded hover:bg-slate-100"},"‹"),
-      h("span",{className:"text-sm font-medium"},fmtShort(days[0])+" – "+fmtShort(days[13])),
-      h("button",{onClick:function(){setStart(addDays(start,7));},className:"p-1.5 rounded hover:bg-slate-100"},"›"),
-      h("button",{onClick:function(){setStart(todayISO());},className:"text-xs px-2 py-1 rounded bg-slate-100"},"This week")),
+    h("div",{className:"bg-white rounded-xl p-3 shadow-sm space-y-2"},
+      h("div",{className:"flex flex-wrap gap-1"},
+        RANGES.map(function(r){return h("button",{key:r.id,onClick:function(){setRange(r.id);},className:"text-xs px-2.5 py-1 rounded-lg font-medium "+(range===r.id?"bg-teal-600 text-white":"bg-slate-100 text-slate-600")},r.label);})),
+      h("div",{className:"flex items-center gap-2"},
+        h("button",{onClick:function(){setStart(addDays(start,-nDays));},className:"p-1.5 rounded hover:bg-slate-100"},"‹"),
+        h("span",{className:"text-sm font-medium"},nDays===1?fmtShort(days[0]):(fmtShort(days[0])+" – "+fmtShort(days[days.length-1]))),
+        h("button",{onClick:function(){setStart(addDays(start,nDays));},className:"p-1.5 rounded hover:bg-slate-100"},"›"),
+        h("button",{onClick:function(){setStart(todayISO());},className:"text-xs px-2 py-1 rounded bg-slate-100 ml-auto"},"Today"))),
     h("div",{className:"bg-white rounded-xl p-2 shadow-sm"},h(Legend,null)),
     drivers.length===0?h(Empty,{msg:"No drivers yet. Add drivers in the Drivers tab to start scheduling."}):
     h("div",{className:"bg-white rounded-xl shadow-sm overflow-x-auto"},
@@ -552,7 +569,7 @@ function ScheduleBoard(props){
             return h("tr",{key:dr.id,className:"hover:bg-slate-50"},
               h("td",{className:"sticky left-0 bg-white z-10 px-2 py-2 border-b border-slate-100"},h("div",{className:"font-medium text-slate-800"},dr.name)),
               days.map(function(d){
-                var s=schedule[dr.id+"|"+d]; var m=s&&mt(s.moveType);
+                var s=schedule[dr.id+"|"+d]; var m=s&&schedInfo(s.moveType);
                 return h("td",{key:d,className:"border-b border-l border-slate-100 p-0.5 text-center"},
                   h("button",{onClick:function(){setCell({driverId:dr.id,date:d});},className:"w-full h-7 rounded text-[10px] font-semibold "+(m?m.chip:"bg-slate-50 text-slate-300")},m?m.abbr:"+"));
               }));
@@ -571,7 +588,7 @@ function DayRate(props){
   var months=useMemo(function(){var s=new Set([monthKey(todayISO())]);Object.keys(schedule).forEach(function(k){s.add(monthKey(k.split("|")[1]));});loads.forEach(function(l){s.add(monthKey(l.date));});return Array.from(s).sort().reverse();},[schedule,loads]);
   var worked=useMemo(function(){
     var map={};drivers.forEach(function(d){map[d.id]=new Set();});
-    Object.keys(schedule).forEach(function(k){var p=k.split("|");var did=p[0];var date=p[1];if(map[did]&&monthKey(date)===mk)map[did].add(date);});
+    Object.keys(schedule).forEach(function(k){var p=k.split("|");var did=p[0];var date=p[1];if(map[did]&&monthKey(date)===mk&&schedule[k].moveType!=="working")map[did].add(date);});
     loads.forEach(function(l){if(map[l.driverId]&&monthKey(l.date)===mk)map[l.driverId].add(l.date);});
     var o={};Object.keys(map).forEach(function(id){o[id]=Array.from(map[id]).sort();});return o;
   },[drivers,schedule,loads,mk]);
@@ -677,9 +694,10 @@ function LocLine(props){
   return h("div",null,
     h("span",{className:"text-[10px] font-bold uppercase text-slate-400"},props.label),
     h("div",{className:"font-medium text-slate-800"},props.pad||"—"),
-    (props.lease||props.coords)?h("div",{className:"flex flex-col gap-0.5 mt-0.5"},
+    (props.lease||props.coords||props.pin)?h("div",{className:"flex flex-col gap-0.5 mt-0.5"},
       props.lease?h("a",{href:mapsHref(props.lease),target:"_blank",rel:"noreferrer",className:"text-[11px] text-teal-700"},"🧭 Lease entrance: "+props.lease):null,
-      props.coords?h("a",{href:mapsHref(props.coords),target:"_blank",rel:"noreferrer",className:"text-[11px] text-teal-700"},"📍 Pad: "+props.coords):null):null);
+      props.coords?h("a",{href:mapsHref(props.coords),target:"_blank",rel:"noreferrer",className:"text-[11px] text-teal-700"},"📍 Pad: "+props.coords):null,
+      props.pin?h("a",{href:pinHref(props.pin),target:"_blank",rel:"noreferrer",className:"text-[11px] text-teal-700 font-semibold"},"📌 Open pin drop in Maps"):null):null);
 }
 
 // ---- MyLoads ----
@@ -702,6 +720,10 @@ function MyLoads(props){
     var moves=getMoves(l).map(function(m){return m.id===moveId?Object.assign({},m,{done:!m.done,doneAt:!m.done?Date.now():null}):m;});
     act(function(){return db.updateLoad(l.id,{moves:moves,status:statusFromMoves(moves,l.status)});});
   }
+  function setStatus(l,status){
+    act(function(){return db.updateLoad(l.id,{status:status});});
+  }
+  var STATUS_OPTS=[{v:"assigned",l:"Not Started"},{v:"inprogress",l:"In Progress"},{v:"completed",l:"Completed"}];
   return h("div",{className:"space-y-3"},
     newCount>0?h("div",{className:"bg-teal-600 text-white rounded-xl p-3 flex items-center gap-2 text-sm font-medium"},"🔔 You have "+newCount+" new "+(newCount===1?"assignment":"assignments")+"."):null,
     h(TodaySummary,{loads:my}),
@@ -714,6 +736,11 @@ function MyLoads(props){
           h("div",{className:"flex items-center justify-between gap-2 mb-1"},
             h("span",{className:"text-xs font-semibold text-slate-600"},fmtShort(l.date)),
             h("div",{className:"flex items-center gap-2"},h(MoveChip,{id:l.moveType,big:true}),h("span",{className:"text-xs text-slate-500"},dn+"/"+ms.length+" done"))),
+          h("div",{className:"flex items-center gap-2 mb-2"},
+            h("span",{className:"text-xs font-medium text-slate-500 shrink-0"},"Status:"),
+            h("select",{value:l.status||"assigned",onChange:function(e){setStatus(l,e.target.value);},
+              className:"inp flex-1 font-semibold "+((l.status||"assigned")==="completed"?"text-green-700":(l.status==="inprogress"?"text-amber-700":"text-slate-700"))},
+              STATUS_OPTS.map(function(o){return h("option",{key:o.v,value:o.v},o.l);}))),
           (l.startTime||l.startFrom)?h("div",{className:"text-sm font-semibold text-slate-800 bg-teal-50 border border-teal-100 rounded-lg px-2.5 py-1.5 mb-2"},
             l.startTime?"Start "+fmtTime(l.startTime):"",
             l.startFrom?h("span",{className:"text-slate-500 font-medium"}," from "+l.startFrom):null):null,
@@ -727,9 +754,9 @@ function MyLoads(props){
                   h("button",{onClick:function(){toggleMove(l,m.id);},className:"mt-0.5 w-6 h-6 rounded-md border-2 flex items-center justify-center shrink-0 "+(m.done?"bg-green-600 border-green-600 text-white":"border-slate-300")},m.done?"✓":""),
                   h("div",{className:"flex-1 min-w-0"},
                     h("div",{className:"text-[10px] font-bold text-teal-700 mb-1"},"MOVE "+(i+1)+(m.done?" · DONE":"")),
-                    h(LocLine,{label:"Pickup",pad:m.pickupPad,lease:m.pickupLease,coords:m.pickupCoords}),
+                    h(LocLine,{label:"Pickup",pad:m.pickupPad,lease:m.pickupLease,coords:m.pickupCoords,pin:m.pickupPin}),
                     h("div",{className:"border-l-2 border-slate-200 h-2 ml-1 my-1"}),
-                    h(LocLine,{label:"Drop-Off",pad:m.dropPad,lease:m.dropLease,coords:m.dropCoords}),
+                    h(LocLine,{label:"Drop-Off",pad:m.dropPad,lease:m.dropLease,coords:m.dropCoords,pin:m.dropPin}),
                     m.notes?h("div",{className:"text-xs text-slate-500 mt-1 bg-slate-50 rounded p-1.5"},m.notes):null)));
             })),
           l.notes?h("div",{className:"text-xs text-slate-500 mt-2 bg-slate-50 rounded p-2 whitespace-pre-wrap"},l.notes):null);
@@ -741,7 +768,8 @@ function MyLoads(props){
           var ms=getMoves(l);
           return h("div",{key:l.id,className:"bg-white/70 rounded-lg p-2.5 shadow-sm flex items-center gap-2 text-sm"},
             "✅",h("span",{className:"text-slate-500"},fmtShort(l.date)),h(MoveChip,{id:l.moveType}),
-            h("span",{className:"text-slate-600 truncate"},ms.length+" move"+(ms.length!==1?"s":"")));
+            h("span",{className:"text-slate-600 truncate"},ms.length+" move"+(ms.length!==1?"s":"")),
+            h("button",{onClick:function(){setStatus(l,"inprogress");},className:"ml-auto text-[11px] text-teal-700 font-medium shrink-0"},"↩ Reopen"));
         }))):null);
 }
 
@@ -773,24 +801,49 @@ function TodaySummary(props){
   }catch(e){return h("div",{className:"bg-slate-800 text-red-300 rounded-xl p-3 text-xs"},"Summary error: "+e.message);}
 }
 
-// ---- MySchedule ----
+// ---- MySchedule (driver self-scheduling) ----
 function MySchedule(props){
-  var identity=props.identity,schedule=props.schedule;
-  var mine=useMemo(function(){
-    return Object.keys(schedule)
-      .filter(function(k){return k.indexOf(identity.driverId+"|")===0;})
-      .map(function(k){return {date:k.split("|")[1],moveType:schedule[k].moveType};})
-      .filter(function(x){return x.date>=todayISO();})
-      .sort(function(a,b){return a.date.localeCompare(b.date);});
-  },[schedule,identity]);
+  var identity=props.identity,schedule=props.schedule,act=props.act;
+  var s1=useState(todayISO()); var start=s1[0]; var setStart=s1[1];
+  var s2=useState("week"); var range=s2[0]; var setRange=s2[1];
+  var nDays=rangeDaysOf(range);
+  var days=useMemo(function(){return Array.from({length:nDays},function(_,i){return addDays(start,i);});},[start,nDays]);
+  function entry(d){return schedule[identity.driverId+"|"+d];}
+  function toggleDay(d){
+    var cur=entry(d);
+    if(cur&&cur.moveType&&cur.moveType!=="working")return; // a manager assigned a move — locked
+    if(cur&&cur.moveType==="working") act(function(){return db.clearSchedule(identity.driverId,d);});
+    else act(function(){return db.setSchedule(identity.driverId,d,"working");});
+  }
   return h("div",{className:"space-y-3"},
-    h("h2",{className:"font-semibold text-slate-700"},"My Upcoming Schedule"),
-    mine.length===0?h(Empty,{msg:"No upcoming shifts scheduled yet."}):
-    h("div",{className:"space-y-2"},
-      mine.map(function(s){
-        return h("div",{key:s.date,className:"bg-white rounded-xl p-3 shadow-sm flex items-center gap-3"},
-          "📅",h("span",{className:"font-medium text-slate-800"},fmtLong(s.date)),
-          h("span",{className:"ml-auto"},h(MoveChip,{id:s.moveType,big:true})));
+    h("div",{className:"bg-white rounded-xl p-3 shadow-sm space-y-2"},
+      h("div",{className:"flex flex-wrap gap-1"},
+        RANGES.map(function(r){return h("button",{key:r.id,onClick:function(){setRange(r.id);},className:"text-xs px-2.5 py-1 rounded-lg font-medium "+(range===r.id?"bg-teal-600 text-white":"bg-slate-100 text-slate-600")},r.label);})),
+      h("div",{className:"flex items-center gap-2"},
+        h("button",{onClick:function(){setStart(addDays(start,-nDays));},className:"p-1.5 rounded hover:bg-slate-100"},"‹"),
+        h("span",{className:"text-sm font-medium"},nDays===1?fmtShort(days[0]):(fmtShort(days[0])+" – "+fmtShort(days[days.length-1]))),
+        h("button",{onClick:function(){setStart(addDays(start,nDays));},className:"p-1.5 rounded hover:bg-slate-100"},"›"),
+        h("button",{onClick:function(){setStart(todayISO());},className:"text-xs px-2 py-1 rounded bg-slate-100 ml-auto"},"Today"))),
+    h("p",{className:"text-xs text-slate-500 px-1"},"Tap a day to mark yourself ",h("span",{className:"font-semibold text-teal-700"},"Working")," so managers can see your availability. Days a manager has assigned you a move show that move and are locked."),
+    h("div",{className:"grid grid-cols-2 sm:grid-cols-3 gap-2"},
+      days.map(function(d){
+        var e=entry(d); var info=e&&schedInfo(e.moveType);
+        var isWorking=e&&e.moveType==="working";
+        var isMove=e&&e.moveType&&e.moveType!=="working";
+        var isToday=d===todayISO();
+        return h("button",{key:d,onClick:function(){toggleDay(d);},disabled:isMove,
+          className:"rounded-xl p-2.5 text-left border-2 transition "+
+            (isMove?"border-slate-200 bg-white cursor-default":
+             isWorking?"border-teal-400 bg-teal-50":
+             "border-dashed border-slate-200 bg-white hover:border-teal-300")},
+          h("div",{className:"flex items-center justify-between"},
+            h("div",{className:"text-[11px] font-semibold "+(isToday?"text-teal-700":"text-slate-500")},parseISO(d).toLocaleDateString("en-US",{weekday:"short"})+(isToday?" · Today":"")),
+            isToday?h("span",{className:"w-1.5 h-1.5 rounded-full bg-teal-500"}):null),
+          h("div",{className:"text-sm font-bold text-slate-800"},parseISO(d).toLocaleDateString("en-US",{month:"short",day:"numeric"})),
+          h("div",{className:"mt-1.5"},
+            isMove?h("span",{className:"inline-block rounded font-semibold text-[10px] px-1.5 py-0.5 "+info.chip},info.label):
+            isWorking?h("span",{className:"inline-block rounded font-semibold text-[10px] px-1.5 py-0.5 "+WORKING.chip},"✓ Working"):
+            h("span",{className:"text-[11px] text-slate-300 font-medium"},"+ Tap to work")));
       })));
 }
 
