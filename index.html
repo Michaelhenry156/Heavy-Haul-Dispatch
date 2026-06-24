@@ -1,0 +1,749 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover"/>
+<meta name="theme-color" content="#0f172a"/>
+<meta name="mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="HH Dispatch"/>
+<title>Heavy Haul Dispatch</title>
+<link rel="manifest" href="manifest.json"/>
+<link rel="apple-touch-icon" href="icon-192.png"/>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+html,body{margin:0;background:#f1f5f9;-webkit-tap-highlight-color:transparent}
+.inp{width:100%;border:1px solid #cbd5e1;border-radius:.5rem;padding:.45rem .65rem;font-size:.875rem;background:#fff;outline:none}
+.inp:focus{border-color:#14b8a6;box-shadow:0 0 0 2px rgba(20,184,166,.2)}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+// ============================================================
+//  Supabase project details (already filled in for you)
+var SUPABASE_URL      = "https://uqgbqemfvmvciqnvhdlf.supabase.co";
+var SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVxZ2JxZW1mdm12Y2lxbnZoZGxmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE5ODI3ODMsImV4cCI6MjA5NzU1ODc4M30.zo5Gshk05MM5cGor_bh1xCZ7QFEAY-3_YFKx0p_1S7g";
+// ============================================================
+
+var h = React.createElement;
+var Fragment = React.Fragment;
+var useState = React.useState;
+var useEffect = React.useEffect;
+var useMemo = React.useMemo;
+var useCallback = React.useCallback;
+
+var configured = SUPABASE_URL.indexOf("PASTE") === -1 && SUPABASE_ANON_KEY.indexOf("PASTE") === -1;
+var sb = configured ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+
+var MOVE_TYPES = [
+  {id:"maxxim", label:"Maxxim",      abbr:"MAX",  chip:"bg-red-500 text-white",         dot:"bg-red-500"},
+  {id:"solaris",label:"Solaris",     abbr:"SOL",  chip:"bg-sky-400 text-white",         dot:"bg-sky-400"},
+  {id:"pile",   label:"Pile",        abbr:"PILE", chip:"bg-green-400 text-white",       dot:"bg-green-400"},
+  {id:"shaker", label:"Shaker",      abbr:"SHK",  chip:"bg-gray-400 text-white",        dot:"bg-gray-400"},
+  {id:"aux",    label:"AUX Moves",   abbr:"AUX",  chip:"bg-yellow-400 text-gray-900",   dot:"bg-yellow-400"},
+  {id:"moser",  label:"Moser Moves", abbr:"MOS",  chip:"bg-purple-300 text-purple-900", dot:"bg-purple-400"},
+];
+function mt(id){ return MOVE_TYPES.find(function(m){return m.id===id;}); }
+
+function toISO(d){var x=new Date(d);return x.getFullYear()+"-"+String(x.getMonth()+1).padStart(2,"0")+"-"+String(x.getDate()).padStart(2,"0");}
+function parseISO(s){var p=s.split("-").map(Number);return new Date(p[0],p[1]-1,p[2]);}
+function todayISO(){return toISO(new Date());}
+function addDays(iso,n){var d=parseISO(iso);d.setDate(d.getDate()+n);return toISO(d);}
+function fmtShort(iso){return parseISO(iso).toLocaleDateString("en-US",{weekday:"short",month:"numeric",day:"numeric"});}
+function fmtLong(iso){return parseISO(iso).toLocaleDateString("en-US",{weekday:"short",year:"numeric",month:"short",day:"numeric"});}
+function fmtMDY(iso){return parseISO(iso).toLocaleDateString("en-US",{month:"numeric",day:"numeric",year:"numeric"});}
+function fmtTime(t){if(!t)return "";try{return new Date("1970-01-01T"+t).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"});}catch(e){return t;}}
+function monthKey(iso){return iso.slice(0,7);}
+function monthLabel(mk){var p=mk.split("-").map(Number);return new Date(p[0],p[1]-1,1).toLocaleDateString("en-US",{month:"long",year:"numeric"});}
+
+function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,7);}
+function blankMove(){return {id:uid(),pickupPad:"",pickupLease:"",pickupCoords:"",dropPad:"",dropLease:"",dropCoords:"",notes:"",done:false,doneAt:null};}
+function getMoves(l){return Array.isArray(l.moves)&&l.moves.length?l.moves:[];}
+function statusFromMoves(moves,fb){
+  if(moves.length&&moves.every(function(m){return m.done;}))return "completed";
+  if(moves.some(function(m){return m.done;}))return "inprogress";
+  return fb==="completed"?"completed":"assigned";
+}
+function mapsHref(c){return (c&&c.trim())?"https://www.google.com/maps/search/?api=1&query="+encodeURIComponent(c.trim()):null;}
+function copyText(t){try{var ta=document.createElement("textarea");ta.value=t;ta.style.cssText="position:fixed;opacity:0";document.body.appendChild(ta);ta.focus();ta.select();document.execCommand("copy");document.body.removeChild(ta);}catch(e){if(navigator.clipboard)navigator.clipboard.writeText(t);}}
+
+function rowToLoad(r){
+  return {
+    id:r.id, driverId:r.driver_id, date:r.work_date, moveType:r.move_type,
+    startFrom:r.start_from||"", startTime:r.start_time||"",
+    assignedBy:(r.assigned_by_id||r.assigned_by_name)?{id:r.assigned_by_id,name:r.assigned_by_name,phone:r.assigned_by_phone||""}:null,
+    notes:r.notes||"", moves:Array.isArray(r.moves)?r.moves:[],
+    status:r.status||"assigned", acknowledged:!!r.acknowledged,
+    createdAt:r.created_at?Date.parse(r.created_at):0,
+  };
+}
+function loadToRow(L){
+  return {
+    driver_id:L.driverId, work_date:L.date, move_type:L.moveType,
+    start_from:L.startFrom||"", start_time:L.startTime||"",
+    assigned_by_id:L.assignedBy?L.assignedBy.id||null:null,
+    assigned_by_name:L.assignedBy?L.assignedBy.name||"":"",
+    assigned_by_phone:L.assignedBy?L.assignedBy.phone||"":"",
+    notes:L.notes||"", moves:L.moves||[], status:L.status||"assigned", acknowledged:!!L.acknowledged,
+  };
+}
+
+var db = {
+  fetchAll: async function(){
+    var res = await Promise.all([
+      sb.from("drivers").select("*").order("created_at"),
+      sb.from("managers").select("*"),
+      sb.from("schedule").select("*"),
+      sb.from("loads").select("*").order("created_at"),
+      sb.from("settings").select("*"),
+    ]);
+    if(res[0].error) throw new Error("drivers: "+res[0].error.message);
+    if(res[2].error) throw new Error("schedule: "+res[2].error.message);
+    if(res[3].error) throw new Error("loads: "+res[3].error.message);
+    var schedule={};
+    (res[2].data||[]).forEach(function(r){schedule[r.driver_id+"|"+r.work_date]={moveType:r.move_type};});
+    var settings={};
+    (res[4].data||[]).forEach(function(r){settings[r.key]=r.value;});
+    return {
+      drivers:res[0].data||[], managers:res[1].data||[],
+      schedule:schedule, loads:(res[3].data||[]).map(rowToLoad),
+      dispatchPin:settings.dispatch_pin||""
+    };
+  },
+  addDriver:    function(d){return sb.from("drivers").insert({name:d.name,phone:d.phone||"",email:d.email||""});},
+  updateDriver: function(id,d){return sb.from("drivers").update({name:d.name,phone:d.phone||"",email:d.email||""}).eq("id",id);},
+  deleteDriver: function(id){return sb.from("drivers").delete().eq("id",id);},
+  addManager:   function(m){return sb.from("managers").insert({name:m.name,phone:m.phone||""});},
+  deleteManager:function(id){return sb.from("managers").delete().eq("id",id);},
+  setSchedule:  function(dId,date,moveType){return sb.from("schedule").upsert({driver_id:dId,work_date:date,move_type:moveType},{onConflict:"driver_id,work_date"});},
+  clearSchedule:function(dId,date){return sb.from("schedule").delete().eq("driver_id",dId).eq("work_date",date);},
+  insertLoad:   function(L){return sb.from("loads").insert(loadToRow(L));},
+  updateLoad:   function(id,patch){return sb.from("loads").update(patch).eq("id",id);},
+  deleteLoad:   function(id){return sb.from("loads").delete().eq("id",id);},
+  setSetting:   function(key,value){return sb.from("settings").upsert({key:key,value:value});},
+  wipe: async function(){
+    await sb.from("loads").delete().neq("id","00000000-0000-0000-0000-000000000000");
+    await sb.from("schedule").delete().neq("work_date","1900-01-01");
+    await sb.from("managers").delete().neq("id","00000000-0000-0000-0000-000000000000");
+    await sb.from("drivers").delete().neq("id","00000000-0000-0000-0000-000000000000");
+    await sb.from("settings").delete().neq("key","");
+  },
+};
+
+var ID_KEY = "hhd_identity";
+function loadIdentity(){try{return JSON.parse(localStorage.getItem(ID_KEY)||"null");}catch(e){return null;}}
+function saveIdentity(v){try{v?localStorage.setItem(ID_KEY,JSON.stringify(v)):localStorage.removeItem(ID_KEY);}catch(e){}}
+
+// ---- small UI helpers ----
+function MoveChip(props){
+  var m=mt(props.id); if(!m)return null;
+  return h("span",{className:"inline-block rounded font-semibold "+(props.big?"text-xs px-2 py-1":"text-[10px] px-1.5 py-0.5")+" "+m.chip},props.big?m.label:m.abbr);
+}
+function Legend(){
+  return h("div",{className:"flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-slate-600"},
+    MOVE_TYPES.map(function(m){
+      return h("span",{key:m.id,className:"flex items-center gap-1"},h("span",{className:"w-3 h-3 rounded-sm "+m.dot}),m.label);
+    }));
+}
+function Field(props){
+  return h("label",{className:"block"},h("span",{className:"text-xs font-medium text-slate-500"},props.label),h("div",{className:"mt-1"},props.children));
+}
+function LRow(props){
+  return h("label",{className:"block"},h("span",{className:"text-[13px] font-medium text-slate-700"},props.label),h("div",{className:"mt-0.5"},props.children));
+}
+function Empty(props){return h("div",{className:"bg-white rounded-xl p-8 shadow-sm text-center text-sm text-slate-400"},props.msg);}
+function Stat(props){
+  return h("div",{className:"bg-white rounded-xl p-3 shadow-sm text-center"},
+    h("div",{className:"text-2xl font-bold "+props.color},props.value),
+    h("div",{className:"text-[11px] text-slate-500 uppercase tracking-wide"},props.label));
+}
+function Modal(props){
+  return h("div",{className:"fixed inset-0 bg-black/40 z-40 flex items-end sm:items-center justify-center p-0 sm:p-4",onClick:props.onClose},
+    h("div",{className:"bg-white rounded-t-2xl sm:rounded-2xl w-full max-w-md max-h-[92vh] overflow-y-auto",onClick:function(e){e.stopPropagation();}},
+      h("div",{className:"flex items-center justify-between px-4 py-3 border-b border-slate-100 sticky top-0 bg-white z-10"},
+        h("h3",{className:"font-semibold text-slate-800"},props.title),
+        h("button",{onClick:props.onClose,className:"p-1 text-slate-500 text-lg"},"✕")),
+      h("div",{className:"p-4"},props.children)));
+}
+function Tab(props){
+  return h("button",{onClick:props.on,className:"flex items-center gap-1.5 px-3 py-2 text-xs sm:text-sm font-medium whitespace-nowrap border-b-2 "+(props.a?"border-teal-400 text-white":"border-transparent text-slate-400")},
+    props.ic," ",props.l);
+}
+
+// ---- SetupScreen ----
+function SetupScreen(){
+  return h("div",{className:"min-h-screen bg-slate-900 text-slate-200 flex items-center justify-center p-6"},
+    h("div",{className:"max-w-md bg-slate-800 rounded-2xl p-6 space-y-3"},
+      h("div",{className:"text-2xl"},"🚛 Heavy Haul Dispatch"),
+      h("p",{className:"text-sm"},"Open index.html and paste your Supabase Project URL and anon public key into the two lines at the top, then re-upload."),
+      h("p",{className:"text-xs text-slate-400"},"Find them in Supabase → Project Settings → API.")));
+}
+
+// ---- ErrorScreen ----
+function ErrorScreen(props){
+  return h("div",{className:"min-h-screen bg-slate-900 text-white flex items-center justify-center p-6"},
+    h("div",{className:"max-w-md bg-slate-800 rounded-2xl p-6 space-y-3"},
+      h("div",{className:"text-2xl"},"⚠️ Connection Error"),
+      h("p",{className:"text-sm text-slate-300"},"Could not load data from Supabase. Error:"),
+      h("div",{className:"bg-slate-900 rounded-lg p-3 text-xs text-red-400 break-all"},props.error),
+      h("p",{className:"text-xs text-slate-400"},"Check your Supabase tables exist and your URL/key are correct."),
+      h("button",{onClick:props.onRetry,className:"w-full bg-teal-600 text-white rounded-lg py-2.5 font-medium mt-2"},"Retry")));
+}
+
+// ---- SignIn ----
+function SignIn(props){
+  var drivers=props.drivers, dispatchPin=props.dispatchPin, onSignIn=props.onSignIn;
+  var s=useState(null); var mode=s[0]; var setMode=s[1];
+  var s2=useState(""); var pin=s2[0]; var setPin=s2[1];
+  var s3=useState(""); var err=s3[0]; var setErr=s3[1];
+  var s4=useState(""); var driverId=s4[0]; var setDriverId=s4[1];
+  return h("div",{className:"min-h-screen bg-slate-900 flex items-center justify-center p-4"},
+    h("div",{className:"bg-white rounded-2xl shadow-xl w-full max-w-sm p-6"},
+      h("div",{className:"text-center text-3xl mb-1"},"🚛"),
+      h("h1",{className:"text-center font-bold text-lg text-slate-800"},"Heavy Haul Dispatch"),
+      h("p",{className:"text-center text-xs text-slate-500 mb-5"},"Sign in to continue"),
+      !mode&&h("div",{className:"space-y-2"},
+        h("button",{onClick:function(){setMode("dispatch");},className:"w-full bg-slate-900 text-white rounded-lg py-3 font-medium"},"Dispatch / Management"),
+        h("button",{onClick:function(){setMode("driver");},className:"w-full border-2 border-slate-300 rounded-lg py-3 font-medium text-slate-700"},"I'm a Driver")),
+      mode==="dispatch"&&h("div",{className:"space-y-3"},
+        dispatchPin
+          ?h(Fragment,null,
+              h("label",{className:"text-sm font-medium text-slate-600"},"Enter dispatch PIN"),
+              h("input",{value:pin,onChange:function(e){setPin(e.target.value);},type:"password",inputMode:"numeric",className:"inp"}),
+              err&&h("p",{className:"text-xs text-red-600"},err),
+              h("button",{onClick:function(){pin===dispatchPin?onSignIn({role:"dispatch"}):setErr("Incorrect PIN");},className:"w-full bg-slate-900 text-white rounded-lg py-2.5 font-medium"},"Sign in"))
+          :h("button",{onClick:function(){onSignIn({role:"dispatch"});},className:"w-full bg-slate-900 text-white rounded-lg py-2.5 font-medium"},"Continue as Dispatch"),
+        h("button",{onClick:function(){setMode(null);setErr("");setPin("");},className:"w-full text-sm text-slate-500"},"Back")),
+      mode==="driver"&&h("div",{className:"space-y-3"},
+        drivers.length===0
+          ?h("p",{className:"text-sm text-slate-500 text-center"},"No drivers added yet. Ask dispatch to add you.")
+          :h(Fragment,null,
+              h("label",{className:"text-sm font-medium text-slate-600"},"Select your name"),
+              h("select",{value:driverId,onChange:function(e){setDriverId(e.target.value);},className:"inp"},
+                h("option",{value:""},"— choose —"),
+                drivers.map(function(d){return h("option",{key:d.id,value:d.id},d.name);})),
+              h("button",{disabled:!driverId,onClick:function(){onSignIn({role:"driver",driverId:driverId});},className:"w-full bg-teal-600 disabled:opacity-40 text-white rounded-lg py-2.5 font-medium"},"Sign in")),
+        h("button",{onClick:function(){setMode(null);},className:"w-full text-sm text-slate-500"},"Back"))));
+}
+
+// ---- App root ----
+function App(){
+  if(!configured) return h(SetupScreen,null);
+  var s1=useState(loadIdentity()); var identity=s1[0]; var setIdentity=s1[1];
+  var s2=useState([]); var drivers=s2[0]; var setDrivers=s2[1];
+  var s3=useState({}); var schedule=s3[0]; var setSchedule=s3[1];
+  var s4=useState([]); var loads=s4[0]; var setLoads=s4[1];
+  var s5=useState([]); var managers=s5[0]; var setManagers=s5[1];
+  var s6=useState(""); var dispatchPin=s6[0]; var setDispatchPin=s6[1];
+  var s7=useState(true); var loading=s7[0]; var setLoading=s7[1];
+  var s8=useState(""); var toast=s8[0]; var setToast=s8[1];
+  var s9=useState(""); var dbError=s9[0]; var setDbError=s9[1];
+  var s10=useState(identity?identity.role==="driver"?"myloads":"dispatch":"dispatch"); var view=s10[0]; var setView=s10[1];
+  var s11=useState(null); var installEvt=s11[0]; var setInstallEvt=s11[1];
+
+  function showToast(m){setToast(m);setTimeout(function(){setToast("");},1800);}
+
+  var refresh=useCallback(async function(spin){
+    if(spin) setLoading(true);
+    try{
+      var d=await db.fetchAll();
+      setDrivers(d.drivers); setManagers(d.managers);
+      setSchedule(d.schedule); setLoads(d.loads);
+      setDispatchPin(d.dispatchPin); setDbError("");
+    }catch(e){
+      console.error(e);
+      setDbError(e&&e.message?e.message:String(e));
+    }
+    setLoading(false);
+  },[]);
+
+  useEffect(function(){refresh(true);},[refresh]);
+  useEffect(function(){
+    var ch;
+    try{ch=sb.channel("hhd").on("postgres_changes",{event:"*",schema:"public"},function(){refresh(false);}).subscribe();}catch(e){}
+    var t=setInterval(function(){refresh(false);},12000);
+    function onFocus(){refresh(false);}
+    window.addEventListener("focus",onFocus);
+    document.addEventListener("visibilitychange",function(){if(!document.hidden)refresh(false);});
+    return function(){clearInterval(t);window.removeEventListener("focus",onFocus);try{sb.removeChannel(ch);}catch(e){}};
+  },[refresh]);
+  useEffect(function(){
+    function fn(e){e.preventDefault();setInstallEvt(e);}
+    window.addEventListener("beforeinstallprompt",fn);
+    return function(){window.removeEventListener("beforeinstallprompt",fn);};
+  },[]);
+
+  async function act(fn,msg){
+    try{await fn();await refresh(false);if(msg)showToast(msg);}
+    catch(e){console.error(e);showToast("Error — check connection");}
+  }
+  function signIn(id){setIdentity(id);saveIdentity(id);setView(id.role==="driver"?"myloads":"dispatch");}
+  function signOut(){setIdentity(null);saveIdentity(null);}
+  function driverName(id){var d=drivers.find(function(x){return x.id===id;});return d?d.name:"Unknown";}
+  async function doInstall(){if(!installEvt)return;installEvt.prompt();await installEvt.userChoice;setInstallEvt(null);}
+
+  if(loading) return h("div",{className:"flex flex-col items-center justify-center h-screen text-slate-500 gap-3"},h("div",{className:"text-4xl"},"🚛"),h("div",{className:"text-sm"},"Connecting…"));
+  if(dbError) return h(ErrorScreen,{error:dbError,onRetry:function(){refresh(true);}});
+  if(!identity) return h(SignIn,{drivers:drivers,dispatchPin:dispatchPin,onSignIn:signIn});
+
+  var isDispatch=identity.role==="dispatch";
+  return h("div",{className:"min-h-screen bg-slate-100 text-slate-800"},
+    h("header",{className:"bg-slate-900 text-white sticky top-0 z-30 shadow",style:{paddingTop:"env(safe-area-inset-top)"}},
+      h("div",{className:"max-w-6xl mx-auto px-3 py-2 flex items-center gap-2"},
+        h("div",{className:"bg-teal-500 rounded-lg px-2 py-1 text-lg"},"🚛"),
+        h("div",{className:"leading-tight"},
+          h("div",{className:"font-bold text-sm sm:text-base"},"Heavy Haul Dispatch"),
+          h("div",{className:"text-[11px] text-slate-400"},isDispatch?"Dispatch / Management":driverName(identity.driverId))),
+        h("div",{className:"ml-auto flex items-center gap-1"},
+          installEvt&&h("button",{onClick:doInstall,className:"text-xs bg-teal-500 rounded-lg px-2 py-1 font-medium"},"Install"),
+          h("button",{onClick:function(){refresh(true);},className:"p-2 rounded hover:bg-slate-700",title:"Refresh"},"🔄"),
+          h("button",{onClick:signOut,className:"p-2 rounded hover:bg-slate-700",title:"Sign out"},"🚪"))),
+      h("nav",{className:"max-w-6xl mx-auto px-2 flex gap-1 overflow-x-auto"},
+        isDispatch?h(Fragment,null,
+          h(Tab,{a:view==="dispatch",on:function(){setView("dispatch");},ic:"📋",l:"Dispatch"}),
+          h(Tab,{a:view==="schedule",on:function(){setView("schedule");},ic:"📅",l:"Schedule"}),
+          h(Tab,{a:view==="dayrate",on:function(){setView("dayrate");},ic:"💲",l:"Day Rate"}),
+          h(Tab,{a:view==="drivers",on:function(){setView("drivers");},ic:"👥",l:"Drivers"}),
+          h(Tab,{a:view==="manage",on:function(){setView("manage");},ic:"⚙️",l:"Manage"}))
+        :h(Fragment,null,
+          h(Tab,{a:view==="myloads",on:function(){setView("myloads");},ic:"📋",l:"My Loads"}),
+          h(Tab,{a:view==="myschedule",on:function(){setView("myschedule");},ic:"📅",l:"My Schedule"})))),
+    h("main",{className:"max-w-6xl mx-auto p-3"},
+      isDispatch&&view==="dispatch"&&h(DispatchBoard,{drivers:drivers,loads:loads,schedule:schedule,managers:managers,driverName:driverName,act:act}),
+      isDispatch&&view==="schedule"&&h(ScheduleBoard,{drivers:drivers,schedule:schedule,act:act}),
+      isDispatch&&view==="dayrate"&&h(DayRate,{drivers:drivers,schedule:schedule,loads:loads,showToast:showToast}),
+      isDispatch&&view==="drivers"&&h(DriversTab,{drivers:drivers,act:act}),
+      isDispatch&&view==="manage"&&h(ManageTab,{managers:managers,dispatchPin:dispatchPin,act:act,showToast:showToast}),
+      !isDispatch&&view==="myloads"&&h(MyLoads,{identity:identity,loads:loads,act:act}),
+      !isDispatch&&view==="myschedule"&&h(MySchedule,{identity:identity,schedule:schedule})),
+    toast&&h("div",{className:"fixed bottom-4 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-sm px-4 py-2 rounded-full shadow-lg z-50"},toast));
+}
+
+// ---- DispatchBoard ----
+function DispatchBoard(props){
+  var drivers=props.drivers,loads=props.loads,schedule=props.schedule,managers=props.managers,driverName=props.driverName,act=props.act;
+  var s1=useState(todayISO()); var date=s1[0]; var setDate=s1[1];
+  var s2=useState(null); var editing=s2[0]; var setEditing=s2[1];
+  var dayLoads=useMemo(function(){return loads.filter(function(l){return l.date===date;}).sort(function(a,b){return (a.createdAt||0)-(b.createdAt||0);});},[loads,date]);
+  function byStatus(k){return dayLoads.filter(function(l){return (l.status||"assigned")===k;});}
+  function saveLoad(data){
+    if(data.id){
+      var id=data.id; var patch=Object.assign({},data); delete patch.id;
+      act(function(){return db.updateLoad(id,loadToRow(patch));},"Updated");
+    } else {
+      act(function(){return db.insertLoad(data);},"Load assigned");
+    }
+    setEditing(null);
+  }
+  function delLoad(id){act(function(){return db.deleteLoad(id);},"Removed");setEditing(null);}
+  var cols=[{key:"assigned",label:"Assigned",color:"border-slate-300"},{key:"inprogress",label:"In Progress",color:"border-amber-400"},{key:"completed",label:"Completed",color:"border-green-400"}];
+  return h("div",{className:"space-y-3"},
+    h("div",{className:"bg-white rounded-xl p-3 shadow-sm flex flex-wrap items-center gap-2"},
+      h("button",{onClick:function(){setDate(addDays(date,-1));},className:"p-1.5 rounded hover:bg-slate-100"},"‹"),
+      h("input",{type:"date",value:date,onChange:function(e){setDate(e.target.value);},className:"border border-slate-300 rounded px-2 py-1 text-sm"}),
+      h("button",{onClick:function(){setDate(addDays(date,1));},className:"p-1.5 rounded hover:bg-slate-100"},"›"),
+      h("button",{onClick:function(){setDate(todayISO());},className:"text-xs px-2 py-1 rounded bg-slate-100"},"Today"),
+      h("button",{onClick:function(){setEditing({date:date});},className:"ml-auto flex items-center gap-1 bg-teal-600 text-white rounded-lg px-3 py-1.5 text-sm font-medium"},"＋ New Assignment")),
+    h("div",{className:"grid grid-cols-3 gap-2"},
+      h(Stat,{label:"Assigned",value:byStatus("assigned").length,color:"text-slate-700"}),
+      h(Stat,{label:"In Progress",value:byStatus("inprogress").length,color:"text-amber-600"}),
+      h(Stat,{label:"Completed",value:byStatus("completed").length,color:"text-green-600"})),
+    h("div",{className:"text-sm font-semibold text-slate-600"},fmtLong(date)),
+    h("div",{className:"grid md:grid-cols-3 gap-3"},
+      cols.map(function(c){
+        return h("div",{key:c.key,className:"bg-white rounded-xl p-2 shadow-sm border-t-4 "+c.color},
+          h("div",{className:"text-xs font-bold text-slate-500 uppercase px-1 py-1"},c.label+" · "+byStatus(c.key).length),
+          h("div",{className:"space-y-2"},
+            byStatus(c.key).map(function(l){
+              var ms=getMoves(l); var dn=ms.filter(function(m){return m.done;}).length;
+              return h("button",{key:l.id,onClick:function(){setEditing(l);},className:"w-full text-left border border-slate-200 rounded-lg p-2 hover:border-teal-400 bg-white"},
+                h("div",{className:"flex items-center justify-between gap-2"},
+                  h("span",{className:"font-semibold text-sm text-slate-800 truncate"},driverName(l.driverId)),
+                  h(MoveChip,{id:l.moveType})),
+                h("div",{className:"text-xs text-slate-500 flex items-center gap-1 mt-1"},"📍 ",
+                  h("span",{className:"truncate"},(ms[0]?ms[0].pickupPad||"—":"—")+" → "+(ms[ms.length-1]?ms[ms.length-1].dropPad||"—":"—"))),
+                h("div",{className:"text-[11px] text-slate-400 mt-1 flex items-center justify-between"},
+                  h("span",null,ms.length+" move"+(ms.length!==1?"s":"")+" · "+dn+"/"+ms.length+" done"+(l.startTime?" · "+fmtTime(l.startTime):"")),
+                  l.assignedBy&&l.assignedBy.name?h("span",null,"👤 "+l.assignedBy.name):null));
+            }),
+            byStatus(c.key).length===0&&h("div",{className:"text-xs text-slate-300 px-1 py-3 text-center"},"None")));
+      })),
+    editing&&h(LoadModal,{drivers:drivers,schedule:schedule,managers:managers,load:editing,onSave:saveLoad,onDelete:delLoad,onClose:function(){setEditing(null);}}));
+}
+
+// ---- LoadModal ----
+function LoadModal(props){
+  var drivers=props.drivers,schedule=props.schedule,managers=props.managers,load=props.load,onSave=props.onSave,onDelete=props.onDelete,onClose=props.onClose;
+  var isNew=!load.id;
+  var existingMoves=getMoves(load);
+  var s1=useState({startFrom:load.startFrom||"",startTime:load.startTime||"",driverIds:load.driverId?[load.driverId]:[""],date:load.date||todayISO(),moveType:load.moveType||"maxxim",assignedById:load.assignedBy?load.assignedBy.id||"":"",notes:load.notes||"",moves:existingMoves.length?existingMoves:[blankMove()]});
+  var f=s1[0]; var setF=s1[1];
+  function set(k,v){setF(function(p){var n=Object.assign({},p);n[k]=v;return n;});}
+  function setDriverId(idx,val){setF(function(p){var ids=p.driverIds.slice();ids[idx]=val;return Object.assign({},p,{driverIds:ids});});}
+  function addDriverRow(){setF(function(p){return Object.assign({},p,{driverIds:p.driverIds.concat([""])});});}
+  function removeDriverRow(idx){setF(function(p){var ids=p.driverIds.filter(function(_,i){return i!==idx;});return Object.assign({},p,{driverIds:ids.length?ids:[""]});});}
+  function updMove(id,patch){setF(function(p){return Object.assign({},p,{moves:p.moves.map(function(m){return m.id===id?Object.assign({},m,patch):m;})});});}
+  function addMove(){setF(function(p){return Object.assign({},p,{moves:p.moves.concat([blankMove()])});});}
+  function rmMove(id){setF(function(p){return Object.assign({},p,{moves:p.moves.filter(function(m){return m.id!==id;})});});}
+  var scheduledFirst=useMemo(function(){
+    var s=drivers.filter(function(d){return schedule[d.id+"|"+f.date];});
+    var r=drivers.filter(function(d){return !schedule[d.id+"|"+f.date];});
+    return s.concat(r);
+  },[drivers,schedule,f.date]);
+  var filledDriverIds=f.driverIds.filter(function(id){return !!id;});
+  var canSubmit=filledDriverIds.length>0&&!!f.assignedById;
+  function save(){
+    if(!canSubmit)return;
+    var mgr=managers.find(function(m){return m.id===f.assignedById;});
+    var base={startFrom:f.startFrom,startTime:f.startTime,date:f.date,moveType:f.moveType,notes:f.notes,assignedBy:mgr?{id:mgr.id,name:mgr.name,phone:mgr.phone||""}:null,moves:f.moves,acknowledged:false};
+    if(isNew){
+      // create one assignment per driver
+      filledDriverIds.forEach(function(dId){
+        onSave(Object.assign({},base,{driverId:dId,status:statusFromMoves(f.moves,"assigned")}));
+      });
+    } else {
+      // edit keeps the single existing assignment
+      onSave(Object.assign({},base,{id:load.id,driverId:filledDriverIds[0],status:statusFromMoves(f.moves,load.status),acknowledged:load.acknowledged}));
+    }
+  }
+  return h(Modal,{title:isNew?"New Assignment":"Edit Assignment",onClose:onClose},
+    h("div",{className:"space-y-3"},
+      h("div",{className:"grid grid-cols-2 gap-2"},
+        h(Field,{label:"Start From"},h("select",{value:f.startFrom,onChange:function(e){set("startFrom",e.target.value);},className:"inp"},h("option",{value:""},"— select —"),h("option",null,"Stanton Yard"),h("option",null,"Depot 2"))),
+        h(Field,{label:"Start Time"},h("input",{type:"time",value:f.startTime,onChange:function(e){set("startTime",e.target.value);},className:"inp"}))),
+      h("div",{className:"grid grid-cols-2 gap-2"},
+        h(Field,{label:"Date"},h("input",{type:"date",value:f.date,onChange:function(e){set("date",e.target.value);},className:"inp"})),
+        h(Field,{label:"Move Type"},h("select",{value:f.moveType,onChange:function(e){set("moveType",e.target.value);},className:"inp"},MOVE_TYPES.map(function(m){return h("option",{key:m.id,value:m.id},m.label);})))),
+
+      h("div",{className:"space-y-2"},
+        h("div",{className:"flex items-center justify-between"},
+          h("span",{className:"text-xs font-medium text-slate-500"},"Driver"+(isNew&&f.driverIds.length>1?"s")+" *"),
+          isNew?h("button",{onClick:addDriverRow,className:"text-xs text-teal-700 font-medium flex items-center gap-1"},"＋ Add Driver"):null),
+        f.driverIds.map(function(dId,idx){
+          var sel=drivers.find(function(d){return d.id===dId;});
+          return h("div",{key:idx,className:"flex items-center gap-2"},
+            h("select",{value:dId,onChange:function(e){setDriverId(idx,e.target.value);},className:"inp flex-1"},
+              h("option",{value:""},"— select driver —"),
+              scheduledFirst.map(function(d){return h("option",{key:d.id,value:d.id},d.name+(schedule[d.id+"|"+f.date]?" ✓ scheduled":""));})),
+            sel&&sel.phone?h("a",{href:"tel:"+sel.phone,className:"text-teal-700 shrink-0",title:"Call "+sel.name},"📞"):null,
+            isNew&&f.driverIds.length>1?h("button",{onClick:function(){removeDriverRow(idx);},className:"text-red-400 shrink-0 p-1"},"✕"):null);
+        }),
+        isNew&&filledDriverIds.length>1?h("div",{className:"text-[11px] text-teal-700 bg-teal-50 rounded-lg px-2.5 py-1.5"},"✓ Will create "+filledDriverIds.length+" separate assignments — one per driver"):null),
+
+      h(Field,{label:"Assigned By *"},
+        managers.length===0
+          ?h("p",{className:"text-xs text-red-600 border border-dashed border-red-300 rounded-lg p-2 bg-red-50"},"No managers yet — add them in the Manage tab.")
+          :h("select",{value:f.assignedById,onChange:function(e){set("assignedById",e.target.value);},className:"inp"},
+              h("option",{value:""},"— select manager —"),
+              managers.map(function(m){return h("option",{key:m.id,value:m.id},m.name);}))),
+
+      h("div",{className:"space-y-3"},
+        f.moves.map(function(m,i){
+          return h("div",{key:m.id,className:"border-2 border-slate-200 rounded-xl p-3 space-y-3"},
+            h("div",{className:"flex items-center"},
+              h("span",{className:"text-xs font-bold text-teal-700"},"MOVE "+(i+1)),
+              f.moves.length>1?h("button",{onClick:function(){rmMove(m.id);},className:"ml-auto text-red-500"},"🗑️"):null),
+            h("div",{className:"space-y-2"},
+              h("div",{className:"font-bold text-sm text-slate-800"},"(Pickup Location)"),
+              h(LRow,{label:"Pad Name:"},h("input",{className:"inp",value:m.pickupPad,onChange:function(e){updMove(m.id,{pickupPad:e.target.value});}})),
+              h(LRow,{label:"Lease Road Entrance Coordinates:"},h("input",{className:"inp",value:m.pickupLease,onChange:function(e){updMove(m.id,{pickupLease:e.target.value});},placeholder:"lat, long"})),
+              h(LRow,{label:"Pad Coordinates:"},h("input",{className:"inp",value:m.pickupCoords,onChange:function(e){updMove(m.id,{pickupCoords:e.target.value});},placeholder:"lat, long"}))),
+            h("div",{className:"space-y-2"},
+              h("div",{className:"font-bold text-sm text-slate-800"},"(Drop-Off Location)"),
+              h(LRow,{label:"Pad Name:"},h("input",{className:"inp",value:m.dropPad,onChange:function(e){updMove(m.id,{dropPad:e.target.value});}})),
+              h(LRow,{label:"Lease Road Entrance Coordinates:"},h("input",{className:"inp",value:m.dropLease,onChange:function(e){updMove(m.id,{dropLease:e.target.value});},placeholder:"lat, long"})),
+              h(LRow,{label:"Pad Coordinates:"},h("input",{className:"inp",value:m.dropCoords,onChange:function(e){updMove(m.id,{dropCoords:e.target.value});},placeholder:"lat, long"}))),
+            h(LRow,{label:"Move notes (optional):"},h("input",{className:"inp",value:m.notes,onChange:function(e){updMove(m.id,{notes:e.target.value});}})));
+        }),
+        h("button",{onClick:addMove,className:"w-full border-2 border-dashed border-slate-300 rounded-xl py-2.5 text-sm font-medium text-slate-600"},"＋ Add another move")),
+
+      h(Field,{label:"Assignment notes (optional)"},h("textarea",{value:f.notes,onChange:function(e){set("notes",e.target.value);},rows:2,className:"inp",placeholder:"Anything that applies to the whole day"})),
+      !canSubmit?h("p",{className:"text-[11px] text-slate-400"},"Select at least one driver and an Assigned By manager to send this assignment."):null,
+      h("div",{className:"flex gap-2 pt-1"},
+        h("button",{disabled:!canSubmit,onClick:save,className:"flex-1 bg-teal-600 disabled:opacity-40 text-white rounded-lg py-2.5 font-medium"},isNew?"Assign"+(filledDriverIds.length>1?" ("+filledDriverIds.length+" drivers)":""):"Save"),
+        !isNew?h("button",{onClick:function(){onDelete(load.id);},className:"px-3 rounded-lg border-2 border-red-200 text-red-600"},"🗑️"):null)));
+}
+
+// ---- ScheduleBoard ----
+function ScheduleBoard(props){
+  var drivers=props.drivers,schedule=props.schedule,act=props.act;
+  var s1=useState(todayISO()); var start=s1[0]; var setStart=s1[1];
+  var s2=useState(null); var cell=s2[0]; var setCell=s2[1];
+  var days=useMemo(function(){return Array.from({length:14},function(_,i){return addDays(start,i);});},[start]);
+  function setMove(dId,date,moveType){
+    if(moveType===null)act(function(){return db.clearSchedule(dId,date);});
+    else act(function(){return db.setSchedule(dId,date,moveType);});
+    setCell(null);
+  }
+  return h("div",{className:"space-y-3"},
+    h("div",{className:"bg-white rounded-xl p-3 shadow-sm flex flex-wrap items-center gap-2"},
+      h("button",{onClick:function(){setStart(addDays(start,-7));},className:"p-1.5 rounded hover:bg-slate-100"},"‹"),
+      h("span",{className:"text-sm font-medium"},fmtShort(days[0])+" – "+fmtShort(days[13])),
+      h("button",{onClick:function(){setStart(addDays(start,7));},className:"p-1.5 rounded hover:bg-slate-100"},"›"),
+      h("button",{onClick:function(){setStart(todayISO());},className:"text-xs px-2 py-1 rounded bg-slate-100"},"This week")),
+    h("div",{className:"bg-white rounded-xl p-2 shadow-sm"},h(Legend,null)),
+    drivers.length===0?h(Empty,{msg:"No drivers yet. Add drivers in the Drivers tab to start scheduling."}):
+    h("div",{className:"bg-white rounded-xl shadow-sm overflow-x-auto"},
+      h("table",{className:"text-xs border-collapse"},
+        h("thead",null,h("tr",null,
+          h("th",{className:"sticky left-0 bg-slate-50 z-10 text-left px-2 py-2 border-b border-slate-200 min-w-[120px]"},"Driver"),
+          days.map(function(d){
+            return h("th",{key:d,className:"px-1 py-2 border-b border-slate-200 text-center min-w-[52px] "+(d===todayISO()?"bg-teal-50":"")},
+              h("div",{className:"font-semibold text-slate-600"},parseISO(d).toLocaleDateString("en-US",{weekday:"short"})),
+              h("div",{className:"text-slate-400"},parseISO(d).toLocaleDateString("en-US",{month:"numeric",day:"numeric"})));
+          }))),
+        h("tbody",null,
+          drivers.map(function(dr){
+            return h("tr",{key:dr.id,className:"hover:bg-slate-50"},
+              h("td",{className:"sticky left-0 bg-white z-10 px-2 py-2 border-b border-slate-100"},h("div",{className:"font-medium text-slate-800"},dr.name)),
+              days.map(function(d){
+                var s=schedule[dr.id+"|"+d]; var m=s&&mt(s.moveType);
+                return h("td",{key:d,className:"border-b border-l border-slate-100 p-0.5 text-center"},
+                  h("button",{onClick:function(){setCell({driverId:dr.id,date:d});},className:"w-full h-7 rounded text-[10px] font-semibold "+(m?m.chip:"bg-slate-50 text-slate-300")},m?m.abbr:"+"));
+              }));
+          })))),
+    cell&&h(Modal,{title:(drivers.find(function(d){return d.id===cell.driverId;})||{name:""}).name+" · "+fmtShort(cell.date),onClose:function(){setCell(null);}},
+      h("p",{className:"text-xs text-slate-500 mb-2"},"Pick the equipment move for this shift."),
+      h("div",{className:"grid grid-cols-2 gap-2"},
+        MOVE_TYPES.map(function(m){return h("button",{key:m.id,onClick:function(){setMove(cell.driverId,cell.date,m.id);},className:"rounded-lg py-2.5 font-semibold text-sm "+m.chip},m.label);})),
+      h("button",{onClick:function(){setMove(cell.driverId,cell.date,null);},className:"w-full mt-3 border-2 border-slate-200 text-slate-600 rounded-lg py-2 text-sm font-medium"},"Clear / Off this day")));
+}
+
+// ---- DayRate ----
+function DayRate(props){
+  var drivers=props.drivers,schedule=props.schedule,loads=props.loads,showToast=props.showToast;
+  var s1=useState(monthKey(todayISO())); var mk=s1[0]; var setMk=s1[1];
+  var months=useMemo(function(){var s=new Set([monthKey(todayISO())]);Object.keys(schedule).forEach(function(k){s.add(monthKey(k.split("|")[1]));});loads.forEach(function(l){s.add(monthKey(l.date));});return Array.from(s).sort().reverse();},[schedule,loads]);
+  var worked=useMemo(function(){
+    var map={};drivers.forEach(function(d){map[d.id]=new Set();});
+    Object.keys(schedule).forEach(function(k){var p=k.split("|");var did=p[0];var date=p[1];if(map[did]&&monthKey(date)===mk)map[did].add(date);});
+    loads.forEach(function(l){if(map[l.driverId]&&monthKey(l.date)===mk)map[l.driverId].add(l.date);});
+    var o={};Object.keys(map).forEach(function(id){o[id]=Array.from(map[id]).sort();});return o;
+  },[drivers,schedule,loads,mk]);
+  return h("div",{className:"space-y-3"},
+    h("div",{className:"bg-white rounded-xl p-3 shadow-sm flex flex-wrap items-center gap-2"},
+      h("span",{className:"text-sm font-medium"},"💲 Worked dates per driver"),
+      h("select",{value:mk,onChange:function(e){setMk(e.target.value);},className:"border border-slate-300 rounded px-2 py-1 text-sm ml-auto"},
+        months.map(function(m){return h("option",{key:m,value:m},monthLabel(m));})),
+      h("button",{onClick:function(){copyText(drivers.map(function(d){return d.name+"\t"+(worked[d.id]||[]).map(fmtMDY).join(", ");}).join("\n"));showToast("All copied (tab-separated)");},className:"bg-slate-900 text-white rounded-lg px-3 py-1.5 text-sm"},"⧉ Copy all")),
+    h("p",{className:"text-xs text-slate-500 px-1"},"A date counts as worked when the driver was scheduled or assigned a load/task that day."),
+    drivers.length===0?h(Empty,{msg:"No drivers yet."}):
+    h("div",{className:"space-y-2"},
+      drivers.map(function(d){
+        var dates=worked[d.id]||[];
+        return h("div",{key:d.id,className:"bg-white rounded-xl p-3 shadow-sm"},
+          h("div",{className:"flex items-center gap-2 mb-1.5"},
+            h("span",{className:"font-semibold text-slate-800"},d.name),
+            h("span",{className:"ml-auto text-xs text-slate-500"},dates.length+" day"+(dates.length!==1?"s":"")),
+            h("button",{disabled:!dates.length,onClick:function(){copyText(dates.map(fmtMDY).join(", "));showToast("Dates copied");},className:"text-xs text-teal-700 disabled:opacity-30"},"⧉ Copy")),
+          dates.length
+            ?h("div",{className:"flex flex-wrap gap-1"},dates.map(function(dt){return h("span",{key:dt,className:"text-xs bg-slate-100 rounded px-1.5 py-0.5 text-slate-700"},fmtMDY(dt));}))
+            :h("div",{className:"text-xs text-slate-300"},"No worked days this month"));
+      })));
+}
+
+// ---- DriversTab ----
+function DriversTab(props){
+  var drivers=props.drivers,act=props.act;
+  var s1=useState(null); var editing=s1[0]; var setEditing=s1[1];
+  function save(d){if(d.id)act(function(){return db.updateDriver(d.id,d);});else act(function(){return db.addDriver(d);});setEditing(null);}
+  function del(id){act(function(){return db.deleteDriver(id);});setEditing(null);}
+  return h("div",{className:"space-y-3"},
+    h("div",{className:"flex items-center"},
+      h("h2",{className:"font-semibold text-slate-700"},"Driver Roster · "+drivers.length),
+      h("button",{onClick:function(){setEditing({name:"",phone:"",email:""});},className:"ml-auto flex items-center gap-1 bg-teal-600 text-white rounded-lg px-3 py-1.5 text-sm"},"＋ Add Driver")),
+    drivers.length===0?h(Empty,{msg:"No drivers yet. Add your drivers to start scheduling and dispatching."}):
+    h("div",{className:"grid sm:grid-cols-2 gap-2"},
+      drivers.map(function(d){
+        return h("div",{key:d.id,className:"bg-white rounded-xl p-3 shadow-sm flex items-center gap-3"},
+          h("div",{className:"bg-slate-100 rounded-full w-9 h-9 flex items-center justify-center text-slate-500 font-bold shrink-0"},d.name.charAt(0).toUpperCase()),
+          h("div",{className:"min-w-0 flex-1"},
+            h("div",{className:"font-medium text-slate-800 truncate"},d.name),
+            h("div",{className:"flex flex-wrap gap-x-3 mt-0.5"},
+              d.phone?h("a",{href:"tel:"+d.phone,className:"text-[11px] text-teal-700"},"📞 "+d.phone):null,
+              d.email?h("a",{href:"mailto:"+d.email,className:"text-[11px] text-teal-700"},"✉️ "+d.email):null)),
+          h("button",{onClick:function(){setEditing(d);},className:"p-2 text-slate-400"},"✏️"));
+      })),
+    editing&&h(Modal,{title:editing.id?"Edit Driver":"Add Driver",onClose:function(){setEditing(null);}},h(DriverForm,{d:editing,onSave:save,onDelete:del})));
+}
+function DriverForm(props){
+  var d=props.d,onSave=props.onSave,onDelete=props.onDelete;
+  var s1=useState({name:d.name||"",phone:d.phone||"",email:d.email||""}); var f=s1[0]; var setF=s1[1];
+  return h("div",{className:"space-y-3"},
+    h(Field,{label:"Name"},h("input",{value:f.name,onChange:function(e){setF(Object.assign({},f,{name:e.target.value}));},className:"inp",placeholder:"Driver name"})),
+    h(Field,{label:"Phone"},h("input",{value:f.phone,onChange:function(e){setF(Object.assign({},f,{phone:e.target.value}));},className:"inp",placeholder:"(432) 555-0123",inputMode:"tel"})),
+    h(Field,{label:"Email (optional)"},h("input",{value:f.email,onChange:function(e){setF(Object.assign({},f,{email:e.target.value}));},className:"inp",placeholder:"driver@email.com",inputMode:"email"})),
+    h("div",{className:"flex gap-2 pt-1"},
+      h("button",{disabled:!f.name.trim(),onClick:function(){onSave(Object.assign({},d.id?{id:d.id}:{},{name:f.name.trim(),phone:f.phone.trim(),email:f.email.trim()}));},className:"flex-1 bg-teal-600 disabled:opacity-40 text-white rounded-lg py-2.5 font-medium"},"Save"),
+      d.id?h("button",{onClick:function(){onDelete(d.id);},className:"px-3 rounded-lg border-2 border-red-200 text-red-600"},"🗑️"):null));
+}
+
+// ---- ManageTab ----
+function ManageTab(props){
+  var managers=props.managers,dispatchPin=props.dispatchPin,act=props.act,showToast=props.showToast;
+  var s1=useState(dispatchPin||""); var pin=s1[0]; var setPin=s1[1];
+  var s2=useState(""); var mName=s2[0]; var setMName=s2[1];
+  var s3=useState(""); var mPhone=s3[0]; var setMPhone=s3[1];
+  function addManager(){if(!mName.trim())return;act(function(){return db.addManager({name:mName.trim(),phone:mPhone.trim()});},"Manager added");setMName("");setMPhone("");}
+  return h("div",{className:"space-y-3 max-w-md"},
+    h("div",{className:"bg-white rounded-xl p-4 shadow-sm space-y-3"},
+      h("h3",{className:"font-semibold text-slate-700"},"👤 Managers (who can assign)"),
+      h("p",{className:"text-xs text-slate-500"},"These appear in the Assigned By dropdown so drivers know who to contact."),
+      managers.length>0?h("div",{className:"space-y-1.5"},managers.map(function(m){
+        return h("div",{key:m.id,className:"flex items-center gap-2 bg-slate-50 rounded-lg px-3 py-2"},
+          h("div",{className:"min-w-0"},
+            h("div",{className:"font-medium text-sm text-slate-800 truncate"},m.name),
+            m.phone?h("div",{className:"text-[11px] text-slate-500"},m.phone):null),
+          h("button",{onClick:function(){act(function(){return db.deleteManager(m.id);});},className:"ml-auto text-red-500 p-1"},"🗑️"));
+      })):null,
+      h("div",{className:"space-y-2 border-t border-slate-100 pt-2"},
+        h("input",{value:mName,onChange:function(e){setMName(e.target.value);},className:"inp",placeholder:"Manager name"}),
+        h("input",{value:mPhone,onChange:function(e){setMPhone(e.target.value);},className:"inp",placeholder:"Phone (so drivers can call)",inputMode:"tel"}),
+        h("button",{onClick:addManager,disabled:!mName.trim(),className:"bg-teal-600 disabled:opacity-40 text-white rounded-lg px-3 py-2 text-sm font-medium"},"＋ Add manager"))),
+    h("div",{className:"bg-white rounded-xl p-4 shadow-sm space-y-2"},
+      h("h3",{className:"font-semibold text-slate-700"},"⚙️ Dispatch PIN"),
+      h("p",{className:"text-xs text-slate-500"},"Set a PIN so only management can sign in as Dispatch. Leave blank for no PIN."),
+      h("input",{value:pin,onChange:function(e){setPin(e.target.value);},inputMode:"numeric",className:"inp",placeholder:"e.g. 4827"}),
+      h("button",{onClick:function(){act(function(){return db.setSetting("dispatch_pin",pin.trim());},"PIN saved");},className:"bg-slate-900 text-white rounded-lg px-4 py-2 text-sm font-medium"},"Save PIN")),
+    h("div",{className:"bg-white rounded-xl p-4 shadow-sm space-y-2 border border-red-100"},
+      h("h3",{className:"font-semibold text-red-600"},"⚠️ Reset all data"),
+      h("p",{className:"text-xs text-slate-500"},"Permanently clears drivers, schedule, loads, and settings for the whole team."),
+      h("button",{onClick:function(){if(confirm("Clear ALL dispatch data for everyone? This cannot be undone."))act(function(){return db.wipe();},"All data cleared");},className:"border-2 border-red-200 text-red-600 rounded-lg px-4 py-2 text-sm font-medium"},"Clear everything")));
+}
+
+// ---- LocLine ----
+function LocLine(props){
+  return h("div",null,
+    h("span",{className:"text-[10px] font-bold uppercase text-slate-400"},props.label),
+    h("div",{className:"font-medium text-slate-800"},props.pad||"—"),
+    (props.lease||props.coords)?h("div",{className:"flex flex-col gap-0.5 mt-0.5"},
+      props.lease?h("a",{href:mapsHref(props.lease),target:"_blank",rel:"noreferrer",className:"text-[11px] text-teal-700"},"🧭 Lease entrance: "+props.lease):null,
+      props.coords?h("a",{href:mapsHref(props.coords),target:"_blank",rel:"noreferrer",className:"text-[11px] text-teal-700"},"📍 Pad: "+props.coords):null):null);
+}
+
+// ---- MyLoads ----
+function MyLoads(props){
+  var identity=props.identity,loads=props.loads,act=props.act;
+  var s0=useState(null); var loadErr=s0[0]; var setLoadErr=s0[1];
+  var my=useMemo(function(){
+    try{return loads.filter(function(l){return l.driverId===identity.driverId;});}
+    catch(e){return [];}
+  },[loads,identity]);
+  useEffect(function(){
+    try{
+      my.filter(function(l){return !l.acknowledged&&(l.status||"assigned")!=="completed";})
+        .forEach(function(l){db.updateLoad(l.id,{acknowledged:true}).catch(function(){});});
+    }catch(e){console.error("ack error",e);}
+  },[my.length]);
+  if(loadErr) return h("div",{className:"bg-red-50 border border-red-200 rounded-xl p-4 text-sm text-red-700"},"Driver view error: "+loadErr+". Please refresh.");
+  var newCount=my.filter(function(l){return !l.acknowledged&&(l.status||"assigned")!=="completed";}).length;
+  var active=my.filter(function(l){return (l.status||"assigned")!=="completed";}).sort(function(a,b){return a.date.localeCompare(b.date)||(a.createdAt||0)-(b.createdAt||0);});
+  var done=my.filter(function(l){return (l.status||"assigned")==="completed";}).sort(function(a,b){return b.date.localeCompare(a.date);});
+  function toggleMove(l,moveId){
+    var moves=getMoves(l).map(function(m){return m.id===moveId?Object.assign({},m,{done:!m.done,doneAt:!m.done?Date.now():null}):m;});
+    act(function(){return db.updateLoad(l.id,{moves:moves,status:statusFromMoves(moves,l.status)});});
+  }
+  return h("div",{className:"space-y-3"},
+    newCount>0?h("div",{className:"bg-teal-600 text-white rounded-xl p-3 flex items-center gap-2 text-sm font-medium"},"🔔 You have "+newCount+" new "+(newCount===1?"assignment":"assignments")+"."):null,
+    h(TodaySummary,{loads:my}),
+    h("h2",{className:"font-semibold text-slate-700"},"Active Loads · "+active.length),
+    active.length===0?h(Empty,{msg:"Nothing assigned right now. You're all caught up."}):
+    h("div",{className:"space-y-3"},
+      active.map(function(l){
+        var ms=getMoves(l); var dn=ms.filter(function(m){return m.done;}).length;
+        return h("div",{key:l.id,className:"bg-white rounded-xl p-3 shadow-sm"},
+          h("div",{className:"flex items-center justify-between gap-2 mb-1"},
+            h("span",{className:"text-xs font-semibold text-slate-600"},fmtShort(l.date)),
+            h("div",{className:"flex items-center gap-2"},h(MoveChip,{id:l.moveType,big:true}),h("span",{className:"text-xs text-slate-500"},dn+"/"+ms.length+" done"))),
+          (l.startTime||l.startFrom)?h("div",{className:"text-sm font-semibold text-slate-800 bg-teal-50 border border-teal-100 rounded-lg px-2.5 py-1.5 mb-2"},
+            l.startTime?"Start "+fmtTime(l.startTime):"",
+            l.startFrom?h("span",{className:"text-slate-500 font-medium"}," from "+l.startFrom):null):null,
+          l.assignedBy&&l.assignedBy.name?h("div",{className:"text-[11px] text-slate-500 flex items-center gap-1 mb-2"},
+            "👤 Assigned by "+l.assignedBy.name,
+            l.assignedBy.phone?h("a",{href:"tel:"+l.assignedBy.phone,className:"text-teal-700 font-medium ml-1"},"📞 Call"):null):null,
+          h("div",{className:"space-y-2"},
+            ms.map(function(m,i){
+              return h("div",{key:m.id,className:"rounded-lg border p-2.5 "+(m.done?"bg-green-50 border-green-200":"bg-white border-slate-200")},
+                h("div",{className:"flex items-start gap-2.5"},
+                  h("button",{onClick:function(){toggleMove(l,m.id);},className:"mt-0.5 w-6 h-6 rounded-md border-2 flex items-center justify-center shrink-0 "+(m.done?"bg-green-600 border-green-600 text-white":"border-slate-300")},m.done?"✓":""),
+                  h("div",{className:"flex-1 min-w-0"},
+                    h("div",{className:"text-[10px] font-bold text-teal-700 mb-1"},"MOVE "+(i+1)+(m.done?" · DONE":"")),
+                    h(LocLine,{label:"Pickup",pad:m.pickupPad,lease:m.pickupLease,coords:m.pickupCoords}),
+                    h("div",{className:"border-l-2 border-slate-200 h-2 ml-1 my-1"}),
+                    h(LocLine,{label:"Drop-Off",pad:m.dropPad,lease:m.dropLease,coords:m.dropCoords}),
+                    m.notes?h("div",{className:"text-xs text-slate-500 mt-1 bg-slate-50 rounded p-1.5"},m.notes):null)));
+            })),
+          l.notes?h("div",{className:"text-xs text-slate-500 mt-2 bg-slate-50 rounded p-2 whitespace-pre-wrap"},l.notes):null);
+      })),
+    done.length>0?h(Fragment,null,
+      h("h2",{className:"font-semibold text-slate-700 pt-2"},"Completed · "+done.length),
+      h("div",{className:"space-y-1.5"},
+        done.slice(0,15).map(function(l){
+          var ms=getMoves(l);
+          return h("div",{key:l.id,className:"bg-white/70 rounded-lg p-2.5 shadow-sm flex items-center gap-2 text-sm"},
+            "✅",h("span",{className:"text-slate-500"},fmtShort(l.date)),h(MoveChip,{id:l.moveType}),
+            h("span",{className:"text-slate-600 truncate"},ms.length+" move"+(ms.length!==1?"s":"")));
+        }))):null);
+}
+
+// ---- TodaySummary ----
+function TodaySummary(props){
+  try{
+  var loads=props.loads;
+  var t=todayISO();
+  var today=loads.filter(function(l){return l.date===t;}).sort(function(a,b){return (a.createdAt||0)-(b.createdAt||0);});
+  var moves=today.reduce(function(acc,l){return acc.concat(getMoves(l));},[]);
+  var done=moves.filter(function(m){return m.done;}).length;
+  var pct=moves.length?Math.round(done/moves.length*100):0;
+  var start=today.find(function(l){return l.startTime||l.startFrom;});
+  return h("div",{className:"bg-slate-900 text-white rounded-xl p-4 shadow"},
+    h("div",{className:"flex items-center gap-2"},"📅 ",h("span",{className:"font-semibold text-sm"},"Today · "+parseISO(t).toLocaleDateString("en-US",{weekday:"long",month:"short",day:"numeric"}))),
+    moves.length===0?h("p",{className:"text-slate-400 text-sm mt-2"},"No moves scheduled for today."):
+    h(Fragment,null,
+      start?h("div",{className:"text-teal-300 text-sm mt-1 font-medium"},(start.startTime?"Start "+fmtTime(start.startTime):"")+(start.startFrom?" from "+start.startFrom:"")):null,
+      h("div",{className:"flex items-baseline gap-2 mt-2"},
+        h("span",{className:"text-3xl font-bold"},done,h("span",{className:"text-slate-500 text-xl"},"/"+moves.length)),
+        h("span",{className:"text-sm text-slate-400"},"moves done · "+today.length+" assignment"+(today.length!==1?"s":""))),
+      h("div",{className:"w-full bg-slate-700 rounded-full h-2 mt-2 overflow-hidden"},h("div",{className:"bg-teal-400 h-full rounded-full",style:{width:pct+"%"}})),
+      h("div",{className:"mt-3 space-y-1.5"},
+        moves.map(function(m){
+          return h("div",{key:m.id,className:"flex items-center gap-2 text-sm"},
+            h("span",{className:"w-4 h-4 rounded-full flex items-center justify-center shrink-0 text-[10px] "+(m.done?"bg-teal-500":"bg-slate-700")},m.done?"✓":""),
+            h("span",{className:"truncate "+(m.done?"text-slate-500 line-through":"text-slate-200")},(m.pickupPad||"—")+" → "+(m.dropPad||"—")));
+        }))));
+  }catch(e){return h("div",{className:"bg-slate-800 text-red-300 rounded-xl p-3 text-xs"},"Summary error: "+e.message);}
+}
+
+// ---- MySchedule ----
+function MySchedule(props){
+  var identity=props.identity,schedule=props.schedule;
+  var mine=useMemo(function(){
+    return Object.keys(schedule)
+      .filter(function(k){return k.indexOf(identity.driverId+"|")===0;})
+      .map(function(k){return {date:k.split("|")[1],moveType:schedule[k].moveType};})
+      .filter(function(x){return x.date>=todayISO();})
+      .sort(function(a,b){return a.date.localeCompare(b.date);});
+  },[schedule,identity]);
+  return h("div",{className:"space-y-3"},
+    h("h2",{className:"font-semibold text-slate-700"},"My Upcoming Schedule"),
+    mine.length===0?h(Empty,{msg:"No upcoming shifts scheduled yet."}):
+    h("div",{className:"space-y-2"},
+      mine.map(function(s){
+        return h("div",{key:s.date,className:"bg-white rounded-xl p-3 shadow-sm flex items-center gap-3"},
+          "📅",h("span",{className:"font-medium text-slate-800"},fmtLong(s.date)),
+          h("span",{className:"ml-auto"},h(MoveChip,{id:s.moveType,big:true})));
+      })));
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(h(App,null));
+</script>
+<script>
+if("serviceWorker"in navigator){window.addEventListener("load",function(){navigator.serviceWorker.register("sw.js").catch(function(){});});}
+</script>
+</body>
+</html>
