@@ -106,7 +106,7 @@ function rowToLoad(r){
     startFrom:r.start_from||"", startTime:r.start_time||"",
     assignedBy:(r.assigned_by_id||r.assigned_by_name)?{id:r.assigned_by_id,name:r.assigned_by_name,phone:r.assigned_by_phone||""}:null,
     notes:r.notes||"", moves:Array.isArray(r.moves)?r.moves:[],
-    status:r.status||"assigned", acknowledged:!!r.acknowledged,
+    status:r.status||"assigned", acknowledged:!!r.acknowledged, crewName:r.crew_name||"",
     createdAt:r.created_at?Date.parse(r.created_at):0,
   };
 }
@@ -117,7 +117,7 @@ function loadToRow(L){
     assigned_by_id:L.assignedBy?L.assignedBy.id||null:null,
     assigned_by_name:L.assignedBy?L.assignedBy.name||"":"",
     assigned_by_phone:L.assignedBy?L.assignedBy.phone||"":"",
-    notes:L.notes||"", moves:L.moves||[], status:L.status||"assigned", acknowledged:!!L.acknowledged,
+    notes:L.notes||"", moves:L.moves||[], status:L.status||"assigned", acknowledged:!!L.acknowledged, crew_name:L.crewName||"",
   };
 }
 
@@ -135,11 +135,14 @@ var db = {
     if(res[3].error) throw new Error("loads: "+res[3].error.message);
     var schedule={};
     (res[2].data||[]).forEach(function(r){schedule[r.driver_id+"|"+r.work_date]={moveType:r.move_type};});
-    var passwords={};
-    (res[4].data||[]).forEach(function(r){if(r.key&&r.key.indexOf("pw:")===0)passwords[r.key]=r.value;});
+    var passwords={};var crews=[];
+    (res[4].data||[]).forEach(function(r){
+      if(r.key&&r.key.indexOf("pw:")===0)passwords[r.key]=r.value;
+      if(r.key==="crews"){try{crews=JSON.parse(r.value)||[];}catch(e){crews=[];}}
+    });
     return {
       drivers:res[0].data||[], managers:res[1].data||[],
-      schedule:schedule, loads:(res[3].data||[]).map(rowToLoad), passwords:passwords
+      schedule:schedule, loads:(res[3].data||[]).map(rowToLoad), passwords:passwords, crews:crews
     };
   },
   getPw: async function(id){
@@ -157,6 +160,7 @@ var db = {
   updateLoad:   function(id,patch){return sb.from("loads").update(patch).eq("id",id);},
   deleteLoad:   function(id){return sb.from("loads").delete().eq("id",id);},
   setSetting:   function(key,value){return sb.from("settings").upsert({key:key,value:value});},
+  setCrews:     function(arr){return sb.from("settings").upsert({key:"crews",value:JSON.stringify(arr)});},
   clearSetting: function(key){return sb.from("settings").delete().eq("key",key);},
   wipe: async function(){
     await sb.from("loads").delete().neq("id","00000000-0000-0000-0000-000000000000");
@@ -311,6 +315,7 @@ function App(){
   var s9=useState(""); var dbError=s9[0]; var setDbError=s9[1];
   var s10=useState(identity?(identity.role==="driver"?"myloads":"dispatch"):"dispatch"); var view=s10[0]; var setView=s10[1];
   var s11=useState(null); var installEvt=s11[0]; var setInstallEvt=s11[1];
+  var s12=useState([]); var crews=s12[0]; var setCrews=s12[1];
 
   function showToast(m){setToast(m);setTimeout(function(){setToast("");},1800);}
 
@@ -320,7 +325,7 @@ function App(){
       var d=await db.fetchAll();
       setDrivers(d.drivers); setManagers(d.managers);
       setSchedule(d.schedule); setLoads(d.loads);
-      setPasswords(d.passwords); setDbError("");
+      setPasswords(d.passwords); setCrews(d.crews||[]); setDbError("");
     }catch(e){
       console.error(e);
       setDbError(e&&e.message?e.message:String(e));
@@ -380,11 +385,11 @@ function App(){
           h(Tab,{a:view==="myloads",on:function(){setView("myloads");},ic:"📋",l:"My Loads"}),
           h(Tab,{a:view==="myschedule",on:function(){setView("myschedule");},ic:"📅",l:"My Schedule"})))),
     h("main",{className:"max-w-6xl mx-auto p-3"},
-      isDispatch&&view==="dispatch"&&h(DispatchBoard,{drivers:drivers,loads:loads,schedule:schedule,managers:managers,driverName:driverName,act:act}),
+      isDispatch&&view==="dispatch"&&h(DispatchBoard,{drivers:drivers,loads:loads,schedule:schedule,managers:managers,crews:crews,driverName:driverName,act:act}),
       isDispatch&&view==="schedule"&&h(ScheduleBoard,{drivers:drivers,schedule:schedule,act:act}),
       isDispatch&&view==="dayrate"&&h(DayRate,{drivers:drivers,schedule:schedule,loads:loads,showToast:showToast}),
       isDispatch&&view==="drivers"&&h(DriversTab,{drivers:drivers,act:act}),
-      isDispatch&&view==="manage"&&h(ManageTab,{managers:managers,drivers:drivers,act:act,showToast:showToast}),
+      isDispatch&&view==="manage"&&h(ManageTab,{managers:managers,drivers:drivers,crews:crews,act:act,showToast:showToast}),
       !isDispatch&&view==="myloads"&&h(MyLoads,{identity:identity,loads:loads,act:act}),
       !isDispatch&&view==="myschedule"&&h(MySchedule,{identity:identity,schedule:schedule,act:act})),
     toast&&h("div",{className:"fixed bottom-4 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-sm px-4 py-2 rounded-full shadow-lg z-50"},toast));
@@ -392,7 +397,7 @@ function App(){
 
 // ---- DispatchBoard ----
 function DispatchBoard(props){
-  var drivers=props.drivers,loads=props.loads,schedule=props.schedule,managers=props.managers,driverName=props.driverName,act=props.act;
+  var drivers=props.drivers,loads=props.loads,schedule=props.schedule,managers=props.managers,crews=props.crews,driverName=props.driverName,act=props.act;
   var s1=useState(todayISO()); var date=s1[0]; var setDate=s1[1];
   var s2=useState(null); var editing=s2[0]; var setEditing=s2[1];
   var dayLoads=useMemo(function(){return loads.filter(function(l){return l.date===date;}).sort(function(a,b){return (a.createdAt||0)-(b.createdAt||0);});},[loads,date]);
@@ -433,21 +438,22 @@ function DispatchBoard(props){
                   h(MoveChip,{id:l.moveType})),
                 h("div",{className:"text-xs text-slate-500 flex items-center gap-1 mt-1"},"📍 ",
                   h("span",{className:"truncate"},(ms[0]?ms[0].pickupPad||"—":"—")+" → "+(ms[ms.length-1]?ms[ms.length-1].dropPad||"—":"—"))),
+                l.crewName?h("div",{className:"text-[11px] text-slate-500 mt-1"},"👷 "+l.crewName):null,
                 h("div",{className:"text-[11px] text-slate-400 mt-1 flex items-center justify-between"},
                   h("span",null,ms.length+" move"+(ms.length!==1?"s":"")+" · "+dn+"/"+ms.length+" done"+(l.startTime?" · "+fmtTime(l.startTime):"")),
                   l.assignedBy&&l.assignedBy.name?h("span",null,"👤 "+l.assignedBy.name):null));
             }),
             byStatus(c.key).length===0&&h("div",{className:"text-xs text-slate-300 px-1 py-3 text-center"},"None")));
       })),
-    editing&&h(LoadModal,{drivers:drivers,schedule:schedule,managers:managers,load:editing,onSave:saveLoad,onDelete:delLoad,onClose:function(){setEditing(null);}}));
+    editing&&h(LoadModal,{drivers:drivers,schedule:schedule,managers:managers,crews:crews,load:editing,onSave:saveLoad,onDelete:delLoad,onClose:function(){setEditing(null);}}));
 }
 
 // ---- LoadModal (multi-driver) ----
 function LoadModal(props){
-  var drivers=props.drivers,schedule=props.schedule,managers=props.managers,load=props.load,onSave=props.onSave,onDelete=props.onDelete,onClose=props.onClose;
+  var drivers=props.drivers,schedule=props.schedule,managers=props.managers,crews=props.crews||[],load=props.load,onSave=props.onSave,onDelete=props.onDelete,onClose=props.onClose;
   var isNew=!load.id;
   var existingMoves=getMoves(load);
-  var s1=useState({startFrom:load.startFrom||"",startTime:load.startTime||"",driverIds:load.driverId?[load.driverId]:[""],date:load.date||todayISO(),moveType:load.moveType||"maxxim",assignedById:load.assignedBy?load.assignedBy.id||"":"",notes:load.notes||"",moves:existingMoves.length?existingMoves:[blankMove()]});
+  var s1=useState({startFrom:load.startFrom||"",startTime:load.startTime||"",driverIds:load.driverId?[load.driverId]:[""],date:load.date||todayISO(),moveType:load.moveType||"maxxim",assignedById:load.assignedBy?load.assignedBy.id||"":"",crewName:load.crewName||"",notes:load.notes||"",moves:existingMoves.length?existingMoves:[blankMove()]});
   var f=s1[0]; var setF=s1[1];
   function set(k,v){setF(function(p){var n=Object.assign({},p);n[k]=v;return n;});}
   function setDriverId(idx,val){setF(function(p){var ids=p.driverIds.slice();ids[idx]=val;return Object.assign({},p,{driverIds:ids});});}
@@ -466,7 +472,7 @@ function LoadModal(props){
   function save(){
     if(!canSubmit)return;
     var mgr=managers.find(function(m){return m.id===f.assignedById;});
-    var base={startFrom:f.startFrom,startTime:f.startTime,date:f.date,moveType:f.moveType,notes:f.notes,assignedBy:mgr?{id:mgr.id,name:mgr.name,phone:mgr.phone||""}:null,moves:f.moves,acknowledged:false};
+    var base={startFrom:f.startFrom,startTime:f.startTime,date:f.date,moveType:f.moveType,notes:f.notes,assignedBy:mgr?{id:mgr.id,name:mgr.name,phone:mgr.phone||""}:null,crewName:f.crewName,moves:f.moves,acknowledged:false};
     if(isNew){
       filledDriverIds.forEach(function(dId){
         onSave(Object.assign({},base,{driverId:dId,status:statusFromMoves(f.moves,"assigned")}));
@@ -503,6 +509,12 @@ function LoadModal(props){
           :h("select",{value:f.assignedById,onChange:function(e){set("assignedById",e.target.value);},className:"inp"},
               h("option",{value:""},"— select manager —"),
               managers.map(function(m){return h("option",{key:m.id,value:m.id},m.name);}))),
+      h(Field,{label:"Crew Name"},
+        crews.length===0
+          ?h("p",{className:"text-xs text-slate-400 border border-dashed border-slate-300 rounded-lg p-2"},"No crews yet — add them in the Manage tab.")
+          :h("select",{value:f.crewName,onChange:function(e){set("crewName",e.target.value);},className:"inp"},
+              h("option",{value:""},"— select crew —"),
+              crews.map(function(c){return h("option",{key:c,value:c},c);}))),
       h("div",{className:"space-y-3"},
         f.moves.map(function(m,i){
           return h("div",{key:m.id,className:"border-2 border-slate-200 rounded-xl p-3 space-y-3"},
@@ -511,16 +523,14 @@ function LoadModal(props){
               f.moves.length>1?h("button",{onClick:function(){rmMove(m.id);},className:"ml-auto text-red-500"},"🗑️"):null),
             h("div",{className:"space-y-2"},
               h("div",{className:"font-bold text-sm text-slate-800"},"(Pickup Location)"),
-              h(LRow,{label:"Pad Name:"},h("input",{className:"inp",value:m.pickupPad,onChange:function(e){updMove(m.id,{pickupPad:e.target.value});}})),
-              h(LRow,{label:"Lease Road Entrance Coordinates:"},h("input",{className:"inp",value:m.pickupLease,onChange:function(e){updMove(m.id,{pickupLease:e.target.value});},placeholder:"lat, long"})),
-              h(LRow,{label:"Pad Coordinates:"},h("input",{className:"inp",value:m.pickupCoords,onChange:function(e){updMove(m.id,{pickupCoords:e.target.value});},placeholder:"lat, long"})),
-              h(LRow,{label:"Pin Drop (paste Google Maps link or coordinates):"},h("input",{className:"inp",value:m.pickupPin,onChange:function(e){updMove(m.id,{pickupPin:e.target.value});},placeholder:"https://maps.app.goo.gl/…  or  lat, long"}))),
+              h(LRow,{label:"Location Name:"},h("input",{className:"inp",value:m.pickupPad,onChange:function(e){updMove(m.id,{pickupPad:e.target.value});}})),
+              h(LRow,{label:"Lease Road Entrance:"},h("input",{className:"inp",value:m.pickupLease,onChange:function(e){updMove(m.id,{pickupLease:e.target.value});},placeholder:"Coordinates or pin drop link"})),
+              h(LRow,{label:"Location:"},h("input",{className:"inp",value:m.pickupCoords,onChange:function(e){updMove(m.id,{pickupCoords:e.target.value});},placeholder:"Coordinates or pin drop link"}))),
             h("div",{className:"space-y-2"},
               h("div",{className:"font-bold text-sm text-slate-800"},"(Drop-Off Location)"),
-              h(LRow,{label:"Pad Name:"},h("input",{className:"inp",value:m.dropPad,onChange:function(e){updMove(m.id,{dropPad:e.target.value});}})),
-              h(LRow,{label:"Lease Road Entrance Coordinates:"},h("input",{className:"inp",value:m.dropLease,onChange:function(e){updMove(m.id,{dropLease:e.target.value});},placeholder:"lat, long"})),
-              h(LRow,{label:"Pad Coordinates:"},h("input",{className:"inp",value:m.dropCoords,onChange:function(e){updMove(m.id,{dropCoords:e.target.value});},placeholder:"lat, long"})),
-              h(LRow,{label:"Pin Drop (paste Google Maps link or coordinates):"},h("input",{className:"inp",value:m.dropPin,onChange:function(e){updMove(m.id,{dropPin:e.target.value});},placeholder:"https://maps.app.goo.gl/…  or  lat, long"}))),
+              h(LRow,{label:"Location Name:"},h("input",{className:"inp",value:m.dropPad,onChange:function(e){updMove(m.id,{dropPad:e.target.value});}})),
+              h(LRow,{label:"Lease Road Entrance:"},h("input",{className:"inp",value:m.dropLease,onChange:function(e){updMove(m.id,{dropLease:e.target.value});},placeholder:"Coordinates or pin drop link"})),
+              h(LRow,{label:"Location:"},h("input",{className:"inp",value:m.dropCoords,onChange:function(e){updMove(m.id,{dropCoords:e.target.value});},placeholder:"Coordinates or pin drop link"}))),
             h(LRow,{label:"Move notes (optional):"},h("input",{className:"inp",value:m.notes,onChange:function(e){updMove(m.id,{notes:e.target.value});}})));
         }),
         h("button",{onClick:addMove,className:"w-full border-2 border-dashed border-slate-300 rounded-xl py-2.5 text-sm font-medium text-slate-600"},"＋ Add another move")),
@@ -652,12 +662,15 @@ function DriverForm(props){
 
 // ---- ManageTab ----
 function ManageTab(props){
-  var managers=props.managers,drivers=props.drivers,act=props.act,showToast=props.showToast;
+  var managers=props.managers,drivers=props.drivers,crews=props.crews||[],act=props.act,showToast=props.showToast;
   var s2=useState(""); var mName=s2[0]; var setMName=s2[1];
   var s3=useState(""); var mPhone=s3[0]; var setMPhone=s3[1];
   var s4=useState(""); var resetId=s4[0]; var setResetId=s4[1];
+  var s5=useState(""); var cName=s5[0]; var setCName=s5[1];
   function addManager(){if(!mName.trim())return;act(function(){return db.addManager({name:mName.trim(),phone:mPhone.trim()});},"Manager added");setMName("");setMPhone("");}
   function resetPw(){if(!resetId)return;act(function(){return db.clearSetting("pw:"+resetId);},"Password reset — they'll set a new one next sign-in");setResetId("");}
+  function addCrew(){var v=cName.trim();if(!v||crews.indexOf(v)!==-1){setCName("");return;}act(function(){return db.setCrews(crews.concat([v]));},"Crew added");setCName("");}
+  function removeCrew(name){act(function(){return db.setCrews(crews.filter(function(c){return c!==name;}));},"Crew removed");}
   var people = managers.map(function(m){return {id:m.id,label:m.name+" (Manager)"};}).concat(drivers.map(function(d){return {id:d.id,label:d.name+" (Driver)"};}));
   return h("div",{className:"space-y-3 max-w-md"},
     h("div",{className:"bg-white rounded-xl p-4 shadow-sm space-y-3"},
@@ -675,6 +688,18 @@ function ManageTab(props){
         h("input",{value:mPhone,onChange:function(e){setMPhone(e.target.value);},className:"inp",placeholder:"Phone (so drivers can call)",inputMode:"tel"}),
         h("button",{onClick:addManager,disabled:!mName.trim(),className:"bg-teal-600 disabled:opacity-40 text-white rounded-lg px-3 py-2 text-sm font-medium"},"＋ Add manager"))),
 
+    h("div",{className:"bg-white rounded-xl p-4 shadow-sm space-y-3"},
+      h("h3",{className:"font-semibold text-slate-700"},"👷 Crews"),
+      h("p",{className:"text-xs text-slate-500"},"Your active crew names. These appear in the Crew Name dropdown on each assignment."),
+      crews.length>0?h("div",{className:"flex flex-wrap gap-1.5"},crews.map(function(c){
+        return h("div",{key:c,className:"flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5"},
+          h("span",{className:"text-sm font-medium text-slate-800"},c),
+          h("button",{onClick:function(){removeCrew(c);},className:"text-red-500 text-xs"},"✕"));
+      })):h("p",{className:"text-xs text-slate-400"},"No crews added yet."),
+      h("div",{className:"flex gap-2 border-t border-slate-100 pt-2"},
+        h("input",{value:cName,onChange:function(e){setCName(e.target.value);},onKeyDown:function(e){if(e.key==="Enter")addCrew();},className:"inp flex-1",placeholder:"Crew name"}),
+        h("button",{onClick:addCrew,disabled:!cName.trim(),className:"bg-teal-600 disabled:opacity-40 text-white rounded-lg px-3 py-2 text-sm font-medium whitespace-nowrap"},"＋ Add"))),
+
     h("div",{className:"bg-white rounded-xl p-4 shadow-sm space-y-2"},
       h("h3",{className:"font-semibold text-slate-700"},"🔑 Reset a login password"),
       h("p",{className:"text-xs text-slate-500"},"If someone forgets their password, reset it here. They'll create a new one the next time they sign in."),
@@ -690,13 +715,14 @@ function ManageTab(props){
 }
 
 // ---- LocLine ----
+function isLink(v){return /^https?:\/\//i.test((v||"").trim());}
 function LocLine(props){
   return h("div",null,
     h("span",{className:"text-[10px] font-bold uppercase text-slate-400"},props.label),
     h("div",{className:"font-medium text-slate-800"},props.pad||"—"),
     (props.lease||props.coords||props.pin)?h("div",{className:"flex flex-col gap-0.5 mt-0.5"},
-      props.lease?h("a",{href:mapsHref(props.lease),target:"_blank",rel:"noreferrer",className:"text-[11px] text-teal-700"},"🧭 Lease entrance: "+props.lease):null,
-      props.coords?h("a",{href:mapsHref(props.coords),target:"_blank",rel:"noreferrer",className:"text-[11px] text-teal-700"},"📍 Pad: "+props.coords):null,
+      props.lease?h("a",{href:pinHref(props.lease),target:"_blank",rel:"noreferrer",className:"text-[11px] text-teal-700"},"🧭 Lease Road Entrance"+(isLink(props.lease)?" — open in Maps":": "+props.lease)):null,
+      props.coords?h("a",{href:pinHref(props.coords),target:"_blank",rel:"noreferrer",className:"text-[11px] text-teal-700"},"📍 Location"+(isLink(props.coords)?" — open in Maps":": "+props.coords)):null,
       props.pin?h("a",{href:pinHref(props.pin),target:"_blank",rel:"noreferrer",className:"text-[11px] text-teal-700 font-semibold"},"📌 Open pin drop in Maps"):null):null);
 }
 
@@ -747,6 +773,7 @@ function MyLoads(props){
           l.assignedBy&&l.assignedBy.name?h("div",{className:"text-[11px] text-slate-500 flex items-center gap-1 mb-2"},
             "👤 Assigned by "+l.assignedBy.name,
             l.assignedBy.phone?h("a",{href:"tel:"+l.assignedBy.phone,className:"text-teal-700 font-medium ml-1"},"📞 Call"):null):null,
+          l.crewName?h("div",{className:"text-[11px] text-slate-500 mb-2"},"👷 Crew: "+l.crewName):null,
           h("div",{className:"space-y-2"},
             ms.map(function(m,i){
               return h("div",{key:m.id,className:"rounded-lg border p-2.5 "+(m.done?"bg-green-50 border-green-200":"bg-white border-slate-200")},
