@@ -58,6 +58,9 @@ function schedInfo(id){return id==="working"?WORKING:mt(id);}
 // Schedule view ranges, shared by the manager Schedule board and driver My Schedule.
 var RANGES=[{id:"day",label:"Day",days:1},{id:"week",label:"Week",days:7},{id:"2weeks",label:"2 Weeks",days:14},{id:"month",label:"Month",days:30}];
 function rangeDaysOf(id){var r=RANGES.find(function(x){return x.id===id;});return r?r.days:14;}
+function fmtMoney(n){return "$"+(Number(n)||0).toLocaleString("en-US",{minimumFractionDigits:0,maximumFractionDigits:2});}
+// history is sorted ascending by 'from'; returns the rate in effect on a given date
+function rateOn(history,date){var r=0;for(var i=0;i<history.length;i++){if((history[i].from||"")<=date)r=history[i].rate;else break;}return r;}
 
 function toISO(d){var x=new Date(d);return x.getFullYear()+"-"+String(x.getMonth()+1).padStart(2,"0")+"-"+String(x.getDate()).padStart(2,"0");}
 function parseISO(s){var p=s.split("-").map(Number);return new Date(p[0],p[1]-1,p[2]);}
@@ -135,14 +138,16 @@ var db = {
     if(res[3].error) throw new Error("loads: "+res[3].error.message);
     var schedule={};
     (res[2].data||[]).forEach(function(r){schedule[r.driver_id+"|"+r.work_date]={moveType:r.move_type};});
-    var passwords={};var crews=[];
+    var passwords={};var crews=[];var dayRates=[];
     (res[4].data||[]).forEach(function(r){
       if(r.key&&r.key.indexOf("pw:")===0)passwords[r.key]=r.value;
       if(r.key==="crews"){try{crews=JSON.parse(r.value)||[];}catch(e){crews=[];}}
+      if(r.key==="dayrate_history"){try{dayRates=JSON.parse(r.value)||[];}catch(e){dayRates=[];}}
     });
+    dayRates.sort(function(a,b){return (a.from||"").localeCompare(b.from||"");});
     return {
       drivers:res[0].data||[], managers:res[1].data||[],
-      schedule:schedule, loads:(res[3].data||[]).map(rowToLoad), passwords:passwords, crews:crews
+      schedule:schedule, loads:(res[3].data||[]).map(rowToLoad), passwords:passwords, crews:crews, dayRates:dayRates
     };
   },
   getPw: async function(id){
@@ -161,6 +166,7 @@ var db = {
   deleteLoad:   function(id){return sb.from("loads").delete().eq("id",id);},
   setSetting:   function(key,value){return sb.from("settings").upsert({key:key,value:value});},
   setCrews:     function(arr){return sb.from("settings").upsert({key:"crews",value:JSON.stringify(arr)});},
+  setDayRates:  function(arr){return sb.from("settings").upsert({key:"dayrate_history",value:JSON.stringify(arr)});},
   clearSetting: function(key){return sb.from("settings").delete().eq("key",key);},
   wipe: async function(){
     await sb.from("loads").delete().neq("id","00000000-0000-0000-0000-000000000000");
@@ -316,6 +322,7 @@ function App(){
   var s10=useState(identity?(identity.role==="driver"?"myloads":"dispatch"):"dispatch"); var view=s10[0]; var setView=s10[1];
   var s11=useState(null); var installEvt=s11[0]; var setInstallEvt=s11[1];
   var s12=useState([]); var crews=s12[0]; var setCrews=s12[1];
+  var s13=useState([]); var dayRates=s13[0]; var setDayRates=s13[1];
 
   function showToast(m){setToast(m);setTimeout(function(){setToast("");},1800);}
 
@@ -325,7 +332,7 @@ function App(){
       var d=await db.fetchAll();
       setDrivers(d.drivers); setManagers(d.managers);
       setSchedule(d.schedule); setLoads(d.loads);
-      setPasswords(d.passwords); setCrews(d.crews||[]); setDbError("");
+      setPasswords(d.passwords); setCrews(d.crews||[]); setDayRates(d.dayRates||[]); setDbError("");
     }catch(e){
       console.error(e);
       setDbError(e&&e.message?e.message:String(e));
@@ -387,9 +394,9 @@ function App(){
     h("main",{className:"max-w-6xl mx-auto p-3"},
       isDispatch&&view==="dispatch"&&h(DispatchBoard,{drivers:drivers,loads:loads,schedule:schedule,managers:managers,crews:crews,driverName:driverName,act:act}),
       isDispatch&&view==="schedule"&&h(ScheduleBoard,{drivers:drivers,schedule:schedule,act:act}),
-      isDispatch&&view==="dayrate"&&h(DayRate,{drivers:drivers,schedule:schedule,loads:loads,showToast:showToast}),
+      isDispatch&&view==="dayrate"&&h(DayRate,{drivers:drivers,schedule:schedule,loads:loads,dayRates:dayRates,showToast:showToast}),
       isDispatch&&view==="drivers"&&h(DriversTab,{drivers:drivers,act:act}),
-      isDispatch&&view==="manage"&&h(ManageTab,{managers:managers,drivers:drivers,crews:crews,act:act,showToast:showToast}),
+      isDispatch&&view==="manage"&&h(ManageTab,{managers:managers,drivers:drivers,crews:crews,dayRates:dayRates,act:act,showToast:showToast}),
       !isDispatch&&view==="myloads"&&h(MyLoads,{identity:identity,loads:loads,act:act}),
       !isDispatch&&view==="myschedule"&&h(MySchedule,{identity:identity,schedule:schedule,act:act})),
     toast&&h("div",{className:"fixed bottom-4 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-sm px-4 py-2 rounded-full shadow-lg z-50"},toast));
@@ -593,8 +600,24 @@ function ScheduleBoard(props){
 
 // ---- DayRate ----
 function DayRate(props){
-  var drivers=props.drivers,schedule=props.schedule,loads=props.loads,showToast=props.showToast;
+  var drivers=props.drivers,schedule=props.schedule,loads=props.loads,dayRates=props.dayRates||[],showToast=props.showToast;
   var s1=useState(monthKey(todayISO())); var mk=s1[0]; var setMk=s1[1];
+  var p1=useState("week"); var prange=p1[0]; var setPRange=p1[1];
+  var p2=useState(todayISO()); var pstart=p2[0]; var setPStart=p2[1];
+  var pDays=rangeDaysOf(prange);
+  var pLast=addDays(pstart,pDays-1);
+  var pLabel=pDays===1?fmtMDY(pstart):(fmtMDY(pstart)+" – "+fmtMDY(pLast));
+  var pay=useMemo(function(){
+    var pEnd=addDays(pstart,pDays);
+    var byDriver={};
+    loads.forEach(function(l){if((l.status||"assigned")==="completed"){(byDriver[l.driverId]=byDriver[l.driverId]||{})[l.date]=true;}});
+    var rows=drivers.map(function(d){
+      var dates=Object.keys(byDriver[d.id]||{}).filter(function(dt){return dt>=pstart&&dt<pEnd;});
+      var amt=dates.reduce(function(s,dt){return s+rateOn(dayRates,dt);},0);
+      return {id:d.id,name:d.name,days:dates.length,amount:amt};
+    });
+    return {rows:rows,total:rows.reduce(function(s,r){return s+r.amount;},0),totalDays:rows.reduce(function(s,r){return s+r.days;},0)};
+  },[loads,drivers,dayRates,pstart,pDays]);
   var months=useMemo(function(){var s=new Set([monthKey(todayISO())]);Object.keys(schedule).forEach(function(k){s.add(monthKey(k.split("|")[1]));});loads.forEach(function(l){s.add(monthKey(l.date));});return Array.from(s).sort().reverse();},[schedule,loads]);
   var worked=useMemo(function(){
     var map={};drivers.forEach(function(d){map[d.id]=new Set();});
@@ -603,6 +626,33 @@ function DayRate(props){
     var o={};Object.keys(map).forEach(function(id){o[id]=Array.from(map[id]).sort();});return o;
   },[drivers,schedule,loads,mk]);
   return h("div",{className:"space-y-3"},
+    h("div",{className:"bg-slate-900 text-white rounded-xl p-4 shadow space-y-3"},
+      h("div",{className:"flex items-center gap-2"},h("span",{className:"text-lg"},"💰"),h("span",{className:"font-semibold"},"Driver Pay Summary")),
+      dayRates.length===0
+        ? h("p",{className:"text-sm text-slate-300"},"Set the Heavy Haul Driver Day Rate in the Manage tab to start tracking driver pay.")
+        : h(Fragment,null,
+            h("div",{className:"flex flex-wrap gap-1"},
+              RANGES.map(function(r){return h("button",{key:r.id,onClick:function(){setPRange(r.id);},className:"text-xs px-2.5 py-1 rounded-lg font-medium "+(prange===r.id?"bg-teal-500 text-white":"bg-slate-700 text-slate-300")},r.label);})),
+            h("div",{className:"flex items-center gap-2"},
+              h("button",{onClick:function(){setPStart(addDays(pstart,-pDays));},className:"p-1.5 rounded hover:bg-slate-700"},"‹"),
+              h("span",{className:"text-sm font-medium"},pLabel),
+              h("button",{onClick:function(){setPStart(addDays(pstart,pDays));},className:"p-1.5 rounded hover:bg-slate-700"},"›"),
+              h("button",{onClick:function(){setPStart(todayISO());},className:"text-xs px-2 py-1 rounded bg-slate-700 ml-auto"},"Today")),
+            h("div",{className:"flex items-baseline gap-2 border-t border-slate-700 pt-2"},
+              h("span",{className:"text-3xl font-bold text-teal-300"},fmtMoney(pay.total)),
+              h("span",{className:"text-sm text-slate-400"},"total · "+pay.totalDays+" driver-day"+(pay.totalDays!==1?"s":""))),
+            (function(){var rows=pay.rows.filter(function(r){return r.days>0;}).sort(function(a,b){return b.amount-a.amount;});
+              return rows.length===0
+                ? h("p",{className:"text-sm text-slate-400"},"No completed loads in this period yet.")
+                : h("div",{className:"space-y-1"},rows.map(function(r){
+                    return h("div",{key:r.id,className:"flex items-center gap-2 text-sm bg-slate-800 rounded-lg px-3 py-2"},
+                      h("span",{className:"text-slate-200 flex-1 truncate"},r.name),
+                      h("span",{className:"text-slate-400 text-xs"},r.days+" day"+(r.days!==1?"s":"")),
+                      h("span",{className:"font-semibold text-teal-300 w-24 text-right"},fmtMoney(r.amount)));
+                  }));
+            })(),
+            h("p",{className:"text-[11px] text-slate-500"},"Counts one day's pay for each day a driver completed at least one assigned load, using the rate that was in effect on that day.")),
+    ),
     h("div",{className:"bg-white rounded-xl p-3 shadow-sm flex flex-wrap items-center gap-2"},
       h("span",{className:"text-sm font-medium"},"💲 Worked dates per driver"),
       h("select",{value:mk,onChange:function(e){setMk(e.target.value);},className:"border border-slate-300 rounded px-2 py-1 text-sm ml-auto"},
@@ -662,15 +712,28 @@ function DriverForm(props){
 
 // ---- ManageTab ----
 function ManageTab(props){
-  var managers=props.managers,drivers=props.drivers,crews=props.crews||[],act=props.act,showToast=props.showToast;
+  var managers=props.managers,drivers=props.drivers,crews=props.crews||[],dayRates=props.dayRates||[],act=props.act,showToast=props.showToast;
   var s2=useState(""); var mName=s2[0]; var setMName=s2[1];
   var s3=useState(""); var mPhone=s3[0]; var setMPhone=s3[1];
   var s4=useState(""); var resetId=s4[0]; var setResetId=s4[1];
   var s5=useState(""); var cName=s5[0]; var setCName=s5[1];
+  var s6=useState(""); var rateInput=s6[0]; var setRateInput=s6[1];
+  var curRate=dayRates.length?dayRates[dayRates.length-1].rate:0;
+  var curFrom=dayRates.length?dayRates[dayRates.length-1].from:null;
   function addManager(){if(!mName.trim())return;act(function(){return db.addManager({name:mName.trim(),phone:mPhone.trim()});},"Manager added");setMName("");setMPhone("");}
   function resetPw(){if(!resetId)return;act(function(){return db.clearSetting("pw:"+resetId);},"Password reset — they'll set a new one next sign-in");setResetId("");}
   function addCrew(){var v=cName.trim();if(!v||crews.indexOf(v)!==-1){setCName("");return;}act(function(){return db.setCrews(crews.concat([v]));},"Crew added");setCName("");}
   function removeCrew(name){act(function(){return db.setCrews(crews.filter(function(c){return c!==name;}));},"Crew removed");}
+  function saveRate(){
+    var v=parseFloat(rateInput);
+    if(isNaN(v)||v<0)return;
+    var hist=dayRates.map(function(x){return {rate:x.rate,from:x.from};});
+    if(hist.length===0){hist.push({rate:v,from:"1900-01-01"});}            // first rate covers all existing days
+    else if(hist[hist.length-1].from===todayISO()){hist[hist.length-1]={rate:v,from:todayISO()};} // same-day correction
+    else {hist.push({rate:v,from:todayISO()});}                            // change applies from today forward
+    act(function(){return db.setDayRates(hist);},"Day rate saved");
+    setRateInput("");
+  }
   var people = managers.map(function(m){return {id:m.id,label:m.name+" (Manager)"};}).concat(drivers.map(function(d){return {id:d.id,label:d.name+" (Driver)"};}));
   return h("div",{className:"space-y-3 max-w-md"},
     h("div",{className:"bg-white rounded-xl p-4 shadow-sm space-y-3"},
@@ -699,6 +762,26 @@ function ManageTab(props){
       h("div",{className:"flex gap-2 border-t border-slate-100 pt-2"},
         h("input",{value:cName,onChange:function(e){setCName(e.target.value);},onKeyDown:function(e){if(e.key==="Enter")addCrew();},className:"inp flex-1",placeholder:"Crew name"}),
         h("button",{onClick:addCrew,disabled:!cName.trim(),className:"bg-teal-600 disabled:opacity-40 text-white rounded-lg px-3 py-2 text-sm font-medium whitespace-nowrap"},"＋ Add"))),
+
+    h("div",{className:"bg-white rounded-xl p-4 shadow-sm space-y-3"},
+      h("h3",{className:"font-semibold text-slate-700"},"💵 Heavy Haul Driver Day Rate"),
+      h("p",{className:"text-xs text-slate-500"},"What each Heavy Haul driver earns per day worked. The Day Rate tab uses this to total driver pay."),
+      h("div",{className:"flex items-baseline gap-2"},
+        h("span",{className:"text-2xl font-bold text-slate-800"},dayRates.length?fmtMoney(curRate):"—"),
+        dayRates.length?h("span",{className:"text-xs text-slate-500"},"per day · effective "+(curFrom==="1900-01-01"?"from the start":fmtMDY(curFrom))):h("span",{className:"text-xs text-slate-400"},"not set yet")),
+      h("div",{className:"flex gap-2 border-t border-slate-100 pt-2"},
+        h("div",{className:"relative flex-1"},
+          h("span",{className:"absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-sm"},"$"),
+          h("input",{value:rateInput,onChange:function(e){setRateInput(e.target.value);},onKeyDown:function(e){if(e.key==="Enter")saveRate();},className:"inp pl-6",placeholder:dayRates.length?"New amount (e.g. 350)":"Amount per day (e.g. 350)",inputMode:"decimal"})),
+        h("button",{onClick:saveRate,disabled:!rateInput.trim(),className:"bg-teal-600 disabled:opacity-40 text-white rounded-lg px-3 py-2 text-sm font-medium whitespace-nowrap"},dayRates.length?"Update rate":"Set rate")),
+      dayRates.length?h("div",{className:"text-[11px] text-amber-700 bg-amber-50 rounded-lg px-2.5 py-1.5"},"Updating the rate only affects days worked from today forward — every earlier day keeps the rate that was in effect then."):null,
+      dayRates.length>1?h("div",{className:"border-t border-slate-100 pt-2 space-y-1"},
+        h("div",{className:"text-[11px] font-semibold text-slate-500 uppercase tracking-wide"},"Rate history"),
+        dayRates.slice().reverse().map(function(rt,i){
+          return h("div",{key:i,className:"flex items-center justify-between text-xs text-slate-600"},
+            h("span",{className:"font-medium"},fmtMoney(rt.rate)+" / day"),
+            h("span",{className:"text-slate-400"},rt.from==="1900-01-01"?"from the start":("from "+fmtMDY(rt.from))));
+        })):null),
 
     h("div",{className:"bg-white rounded-xl p-4 shadow-sm space-y-2"},
       h("h3",{className:"font-semibold text-slate-700"},"🔑 Reset a login password"),
