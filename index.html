@@ -83,9 +83,9 @@ function swReady(){
   if(!("serviceWorker"in navigator))return Promise.reject(new Error("no sw"));
   return Promise.race([navigator.serviceWorker.ready,new Promise(function(_,rej){setTimeout(function(){rej(new Error("sw timeout"));},1500);})]);
 }
-function notify(title,body){
+function notify(title,body,url){
   if(!("Notification"in window)||Notification.permission!=="granted")return Promise.resolve(false);
-  var opts={body:body,tag:"hhd-"+Date.now(),renotify:true};
+  var opts={body:body,tag:"hhd-"+Date.now(),renotify:true,data:{url:url||"./"}};
   return swReady().then(function(reg){return reg.showNotification(title,opts);}).then(function(){return true;}).catch(function(){
     try{new Notification(title,opts);return true;}catch(e){return false;}
   });
@@ -373,7 +373,7 @@ function App(){
   useEffect(function(){
     var ch;
     try{ch=sb.channel("hhd").on("postgres_changes",{event:"*",schema:"public"},function(){refresh(false);}).subscribe();}catch(e){}
-    var t=setInterval(function(){refresh(false);},12000);
+    var t=setInterval(function(){refresh(false);},8000);
     function onFocus(){refresh(false);}
     window.addEventListener("focus",onFocus);
     document.addEventListener("visibilitychange",function(){if(!document.hidden)refresh(false);});
@@ -383,16 +383,18 @@ function App(){
   var seenLoadsRef=useRef(null);
   useEffect(function(){
     if(!identity||identity.role!=="driver"){seenLoadsRef.current=null;return;}
+    if(loading)return; // wait for the first real data load before deciding what's "new"
     var mine=loads.filter(function(l){return l.driverId===identity.driverId;});
     if(seenLoadsRef.current===null){seenLoadsRef.current=new Set(mine.map(function(l){return l.id;}));return;}
     mine.forEach(function(l){
-      if(!seenLoadsRef.current.has(l.id)&&(l.status||"assigned")!=="completed"){
-        var mtt=l.moveType?(schedInfo(l.moveType)||{}).label:"";
-        notify("New load assigned",(mtt?mtt+" move":"New move")+(l.date?" · "+fmtMDY(l.date):""));
-      }
+      if(seenLoadsRef.current.has(l.id))return;
       seenLoadsRef.current.add(l.id);
+      if((l.status||"assigned")!=="completed"){
+        var mtt=l.moveType?(schedInfo(l.moveType)||{}).label:"";
+        notify("New load assigned",(mtt?mtt+" move":"New move")+(l.date?" · "+fmtMDY(l.date):""),"./");
+      }
     });
-  },[loads,identity]);
+  },[loads,identity,loading]);
   useEffect(function(){
     function fn(e){e.preventDefault();setInstallEvt(e);}
     window.addEventListener("beforeinstallprompt",fn);
