@@ -15,6 +15,7 @@
 <script src="https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
 html,body{margin:0;background:#f1f5f9;-webkit-tap-highlight-color:transparent}
 .inp{width:100%;border:1px solid #cbd5e1;border-radius:.5rem;padding:.45rem .65rem;font-size:.875rem;background:#fff;outline:none}
@@ -36,6 +37,7 @@ var useState = React.useState;
 var useEffect = React.useEffect;
 var useMemo = React.useMemo;
 var useCallback = React.useCallback;
+var useRef = React.useRef;
 
 var configured = SUPABASE_URL.indexOf("PASTE") === -1 && SUPABASE_ANON_KEY.indexOf("PASTE") === -1;
 var sb = configured ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
@@ -61,6 +63,30 @@ function rangeDaysOf(id){var r=RANGES.find(function(x){return x.id===id;});retur
 function fmtMoney(n){return "$"+(Number(n)||0).toLocaleString("en-US",{minimumFractionDigits:0,maximumFractionDigits:2});}
 // history is sorted ascending by 'from'; returns the rate in effect on a given date
 function rateOn(history,date){var r=0;for(var i=0;i<history.length;i++){if((history[i].from||"")<=date)r=history[i].rate;else break;}return r;}
+// inclusive list of ISO dates from a to b, capped to 'cap' columns
+function daysBetween(a,b,cap){if(!a||!b)return [];if(b<a){var t=a;a=b;b=t;}var out=[],d=a,n=0;cap=cap||92;while(d<=b&&n<cap){out.push(d);d=addDays(d,1);n++;}return out;}
+function csvCell(v){v=(v==null?"":String(v));return /[",\n]/.test(v)?('"'+v.replace(/"/g,'""')+'"'):v;}
+// sheets: [{name, aoa}]. Uses SheetJS if loaded, else falls back to CSV download.
+function downloadSheets(filename,sheets){
+  try{
+    if(typeof XLSX!=="undefined"&&XLSX.utils){
+      var wb=XLSX.utils.book_new();
+      sheets.forEach(function(s){XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(s.aoa),s.name.slice(0,31));});
+      XLSX.writeFile(wb,filename+".xlsx");return;
+    }
+  }catch(e){}
+  var csv=sheets.map(function(s){return (sheets.length>1?("# "+s.name+"\n"):"")+s.aoa.map(function(row){return row.map(csvCell).join(",");}).join("\n");}).join("\n\n");
+  var blob=new Blob([csv],{type:"text/csv;charset=utf-8;"});var url=URL.createObjectURL(blob);
+  var a=document.createElement("a");a.href=url;a.download=filename+".csv";document.body.appendChild(a);a.click();document.body.removeChild(a);setTimeout(function(){URL.revokeObjectURL(url);},1000);
+}
+function notify(title,body){
+  if(!("Notification"in window)||Notification.permission!=="granted")return;
+  try{
+    if(navigator.serviceWorker&&navigator.serviceWorker.ready){
+      navigator.serviceWorker.ready.then(function(reg){reg.showNotification(title,{body:body,tag:"hhd-load",renotify:true});}).catch(function(){try{new Notification(title,{body:body});}catch(e){}});
+    }else{new Notification(title,{body:body});}
+  }catch(e){}
+}
 
 function toISO(d){var x=new Date(d);return x.getFullYear()+"-"+String(x.getMonth()+1).padStart(2,"0")+"-"+String(x.getDate()).padStart(2,"0");}
 function parseISO(s){var p=s.split("-").map(Number);return new Date(p[0],p[1]-1,p[2]);}
@@ -311,6 +337,7 @@ function SignIn(props){
 function App(){
   if(!configured) return h(SetupScreen,null);
   var s1=useState(loadIdentity()); var identity=s1[0]; var setIdentity=s1[1];
+  var identityRef=useRef(identity); identityRef.current=identity;
   var s2=useState([]); var drivers=s2[0]; var setDrivers=s2[1];
   var s3=useState({}); var schedule=s3[0]; var setSchedule=s3[1];
   var s4=useState([]); var loads=s4[0]; var setLoads=s4[1];
@@ -343,7 +370,16 @@ function App(){
   useEffect(function(){refresh(true);},[refresh]);
   useEffect(function(){
     var ch;
-    try{ch=sb.channel("hhd").on("postgres_changes",{event:"*",schema:"public"},function(){refresh(false);}).subscribe();}catch(e){}
+    try{ch=sb.channel("hhd")
+      .on("postgres_changes",{event:"*",schema:"public"},function(){refresh(false);})
+      .on("postgres_changes",{event:"INSERT",schema:"public",table:"loads"},function(payload){
+        var id=identityRef.current; var row=payload&&payload.new;
+        if(id&&id.role==="driver"&&row&&row.driver_id===id.driverId){
+          var mtt=row.move_type?(schedInfo(row.move_type)||{}).label:""; 
+          notify("New load assigned",(mtt?mtt+" move":"New move")+(row.work_date?" · "+fmtMDY(row.work_date):""));
+        }
+      })
+      .subscribe();}catch(e){}
     var t=setInterval(function(){refresh(false);},12000);
     function onFocus(){refresh(false);}
     window.addEventListener("focus",onFocus);
@@ -554,22 +590,47 @@ function ScheduleBoard(props){
   var s1=useState(todayISO()); var start=s1[0]; var setStart=s1[1];
   var s2=useState(null); var cell=s2[0]; var setCell=s2[1];
   var s3=useState("2weeks"); var range=s3[0]; var setRange=s3[1];
+  var s4=useState(todayISO()); var cStart=s4[0]; var setCStart=s4[1];
+  var s5=useState(addDays(todayISO(),13)); var cEnd=s5[0]; var setCEnd=s5[1];
+  var isCustom=range==="custom";
   var nDays=rangeDaysOf(range);
-  var days=useMemo(function(){return Array.from({length:nDays},function(_,i){return addDays(start,i);});},[start,nDays]);
+  var days=useMemo(function(){
+    if(range==="custom")return daysBetween(cStart,cEnd,92);
+    return Array.from({length:rangeDaysOf(range)},function(_,i){return addDays(start,i);});
+  },[start,range,cStart,cEnd]);
   function setMove(dId,date,moveType){
     if(moveType===null)act(function(){return db.clearSchedule(dId,date);});
     else act(function(){return db.setSchedule(dId,date,moveType);});
     setCell(null);
   }
+  function exportSchedule(){
+    if(!days.length)return;
+    var aoa=[["Driver"].concat(days.map(function(d){return fmtMDY(d);}))];
+    drivers.forEach(function(dr){
+      var row=[dr.name];
+      days.forEach(function(d){var s=schedule[dr.id+"|"+d];var info=s&&schedInfo(s.moveType);row.push(info?info.label:"");});
+      aoa.push(row);
+    });
+    downloadSheets("Heavy_Haul_Schedule_"+days[0]+"_to_"+days[days.length-1],[{name:"Schedule",aoa:aoa}]);
+  }
   return h("div",{className:"space-y-3"},
     h("div",{className:"bg-white rounded-xl p-3 shadow-sm space-y-2"},
-      h("div",{className:"flex flex-wrap gap-1"},
-        RANGES.map(function(r){return h("button",{key:r.id,onClick:function(){setRange(r.id);},className:"text-xs px-2.5 py-1 rounded-lg font-medium "+(range===r.id?"bg-teal-600 text-white":"bg-slate-100 text-slate-600")},r.label);})),
-      h("div",{className:"flex items-center gap-2"},
-        h("button",{onClick:function(){setStart(addDays(start,-nDays));},className:"p-1.5 rounded hover:bg-slate-100"},"‹"),
-        h("span",{className:"text-sm font-medium"},nDays===1?fmtShort(days[0]):(fmtShort(days[0])+" – "+fmtShort(days[days.length-1]))),
-        h("button",{onClick:function(){setStart(addDays(start,nDays));},className:"p-1.5 rounded hover:bg-slate-100"},"›"),
-        h("button",{onClick:function(){setStart(todayISO());},className:"text-xs px-2 py-1 rounded bg-slate-100 ml-auto"},"Today"))),
+      h("div",{className:"flex flex-wrap items-center gap-1"},
+        RANGES.map(function(r){return h("button",{key:r.id,onClick:function(){setRange(r.id);},className:"text-xs px-2.5 py-1 rounded-lg font-medium "+(range===r.id?"bg-teal-600 text-white":"bg-slate-100 text-slate-600")},r.label);}),
+        h("button",{onClick:function(){setRange("custom");},className:"text-xs px-2.5 py-1 rounded-lg font-medium "+(isCustom?"bg-teal-600 text-white":"bg-slate-100 text-slate-600")},"Custom"),
+        h("button",{onClick:exportSchedule,className:"text-xs px-2.5 py-1 rounded-lg font-medium bg-slate-900 text-white ml-auto"},"⬇ Excel")),
+      isCustom
+        ? h("div",{className:"flex flex-wrap items-center gap-2"},
+            h("span",{className:"text-xs text-slate-500"},"From"),
+            h("input",{type:"date",value:cStart,onChange:function(e){setCStart(e.target.value);},className:"inp w-auto"}),
+            h("span",{className:"text-xs text-slate-500"},"To"),
+            h("input",{type:"date",value:cEnd,onChange:function(e){setCEnd(e.target.value);},className:"inp w-auto"}),
+            days.length>=92?h("span",{className:"text-[11px] text-amber-600"},"showing first 92 days"):null)
+        : h("div",{className:"flex items-center gap-2"},
+            h("button",{onClick:function(){setStart(addDays(start,-nDays));},className:"p-1.5 rounded hover:bg-slate-100"},"‹"),
+            h("span",{className:"text-sm font-medium"},nDays===1?fmtShort(days[0]):(fmtShort(days[0])+" – "+fmtShort(days[days.length-1]))),
+            h("button",{onClick:function(){setStart(addDays(start,nDays));},className:"p-1.5 rounded hover:bg-slate-100"},"›"),
+            h("button",{onClick:function(){setStart(todayISO());},className:"text-xs px-2 py-1 rounded bg-slate-100 ml-auto"},"Today"))),
     h("div",{className:"bg-white rounded-xl p-2 shadow-sm"},h(Legend,null)),
     drivers.length===0?h(Empty,{msg:"No drivers yet. Add drivers in the Drivers tab to start scheduling."}):
     h("div",{className:"bg-white rounded-xl shadow-sm overflow-x-auto"},
@@ -603,21 +664,35 @@ function DayRate(props){
   var drivers=props.drivers,schedule=props.schedule,loads=props.loads,dayRates=props.dayRates||[],showToast=props.showToast;
   var s1=useState(monthKey(todayISO())); var mk=s1[0]; var setMk=s1[1];
   var p1=useState("week"); var prange=p1[0]; var setPRange=p1[1];
-  var p2=useState(todayISO()); var pstart=p2[0]; var setPStart=p2[1];
+  var p2=useState(todayISO()); var navStart=p2[0]; var setNavStart=p2[1];
+  var p3=useState(todayISO()); var cStart=p3[0]; var setCStart=p3[1];
+  var p4=useState(addDays(todayISO(),6)); var cEnd=p4[0]; var setCEnd=p4[1];
+  var isCustom=prange==="custom";
   var pDays=rangeDaysOf(prange);
-  var pLast=addDays(pstart,pDays-1);
-  var pLabel=pDays===1?fmtMDY(pstart):(fmtMDY(pstart)+" – "+fmtMDY(pLast));
+  var cLo=cStart<=cEnd?cStart:cEnd, cHi=cStart<=cEnd?cEnd:cStart;
+  var pStart=isCustom?cLo:navStart;
+  var pEnd=isCustom?addDays(cHi,1):addDays(navStart,pDays);
+  var pLabel=isCustom?(fmtMDY(cLo)+" – "+fmtMDY(cHi)):(pDays===1?fmtMDY(navStart):(fmtMDY(navStart)+" – "+fmtMDY(addDays(navStart,pDays-1))));
   var pay=useMemo(function(){
-    var pEnd=addDays(pstart,pDays);
     var byDriver={};
     loads.forEach(function(l){if((l.status||"assigned")==="completed"){(byDriver[l.driverId]=byDriver[l.driverId]||{})[l.date]=true;}});
+    var detail=[];
     var rows=drivers.map(function(d){
-      var dates=Object.keys(byDriver[d.id]||{}).filter(function(dt){return dt>=pstart&&dt<pEnd;});
+      var dates=Object.keys(byDriver[d.id]||{}).filter(function(dt){return dt>=pStart&&dt<pEnd;}).sort();
+      dates.forEach(function(dt){detail.push({name:d.name,date:dt,rate:rateOn(dayRates,dt)});});
       var amt=dates.reduce(function(s,dt){return s+rateOn(dayRates,dt);},0);
       return {id:d.id,name:d.name,days:dates.length,amount:amt};
     });
-    return {rows:rows,total:rows.reduce(function(s,r){return s+r.amount;},0),totalDays:rows.reduce(function(s,r){return s+r.days;},0)};
-  },[loads,drivers,dayRates,pstart,pDays]);
+    return {rows:rows,detail:detail,total:rows.reduce(function(s,r){return s+r.amount;},0),totalDays:rows.reduce(function(s,r){return s+r.days;},0)};
+  },[loads,drivers,dayRates,pStart,pEnd]);
+  function exportPay(){
+    var summary=[["Driver","Paid Days","Amount ($)"]];
+    pay.rows.filter(function(r){return r.days>0;}).sort(function(a,b){return b.amount-a.amount;}).forEach(function(r){summary.push([r.name,r.days,r.amount]);});
+    summary.push(["TOTAL",pay.totalDays,pay.total]);
+    var det=[["Driver","Date","Day Rate ($)"]];
+    pay.detail.slice().sort(function(a,b){return a.name.localeCompare(b.name)||a.date.localeCompare(b.date);}).forEach(function(x){det.push([x.name,fmtMDY(x.date),x.rate]);});
+    downloadSheets("Driver_Pay_"+pStart+"_to_"+addDays(pEnd,-1),[{name:"Summary",aoa:summary},{name:"Detail",aoa:det}]);
+  }
   var months=useMemo(function(){var s=new Set([monthKey(todayISO())]);Object.keys(schedule).forEach(function(k){s.add(monthKey(k.split("|")[1]));});loads.forEach(function(l){s.add(monthKey(l.date));});return Array.from(s).sort().reverse();},[schedule,loads]);
   var worked=useMemo(function(){
     var map={};drivers.forEach(function(d){map[d.id]=new Set();});
@@ -631,13 +706,21 @@ function DayRate(props){
       dayRates.length===0
         ? h("p",{className:"text-sm text-slate-300"},"Set the Heavy Haul Driver Day Rate in the Manage tab to start tracking driver pay.")
         : h(Fragment,null,
-            h("div",{className:"flex flex-wrap gap-1"},
-              RANGES.map(function(r){return h("button",{key:r.id,onClick:function(){setPRange(r.id);},className:"text-xs px-2.5 py-1 rounded-lg font-medium "+(prange===r.id?"bg-teal-500 text-white":"bg-slate-700 text-slate-300")},r.label);})),
-            h("div",{className:"flex items-center gap-2"},
-              h("button",{onClick:function(){setPStart(addDays(pstart,-pDays));},className:"p-1.5 rounded hover:bg-slate-700"},"‹"),
-              h("span",{className:"text-sm font-medium"},pLabel),
-              h("button",{onClick:function(){setPStart(addDays(pstart,pDays));},className:"p-1.5 rounded hover:bg-slate-700"},"›"),
-              h("button",{onClick:function(){setPStart(todayISO());},className:"text-xs px-2 py-1 rounded bg-slate-700 ml-auto"},"Today")),
+            h("div",{className:"flex flex-wrap items-center gap-1"},
+              RANGES.map(function(r){return h("button",{key:r.id,onClick:function(){setPRange(r.id);},className:"text-xs px-2.5 py-1 rounded-lg font-medium "+(prange===r.id?"bg-teal-500 text-white":"bg-slate-700 text-slate-300")},r.label);}),
+              h("button",{onClick:function(){setPRange("custom");},className:"text-xs px-2.5 py-1 rounded-lg font-medium "+(isCustom?"bg-teal-500 text-white":"bg-slate-700 text-slate-300")},"Custom"),
+              h("button",{onClick:exportPay,className:"text-xs px-2.5 py-1 rounded-lg font-medium bg-teal-600 text-white ml-auto"},"⬇ Excel")),
+            isCustom
+              ? h("div",{className:"flex flex-wrap items-center gap-2"},
+                  h("span",{className:"text-xs text-slate-400"},"From"),
+                  h("input",{type:"date",value:cStart,onChange:function(e){setCStart(e.target.value);},className:"rounded px-2 py-1 text-sm text-slate-800 bg-white"}),
+                  h("span",{className:"text-xs text-slate-400"},"To"),
+                  h("input",{type:"date",value:cEnd,onChange:function(e){setCEnd(e.target.value);},className:"rounded px-2 py-1 text-sm text-slate-800 bg-white"}))
+              : h("div",{className:"flex items-center gap-2"},
+                  h("button",{onClick:function(){setNavStart(addDays(navStart,-pDays));},className:"p-1.5 rounded hover:bg-slate-700"},"‹"),
+                  h("span",{className:"text-sm font-medium"},pLabel),
+                  h("button",{onClick:function(){setNavStart(addDays(navStart,pDays));},className:"p-1.5 rounded hover:bg-slate-700"},"›"),
+                  h("button",{onClick:function(){setNavStart(todayISO());},className:"text-xs px-2 py-1 rounded bg-slate-700 ml-auto"},"Today")),
             h("div",{className:"flex items-baseline gap-2 border-t border-slate-700 pt-2"},
               h("span",{className:"text-3xl font-bold text-teal-300"},fmtMoney(pay.total)),
               h("span",{className:"text-sm text-slate-400"},"total · "+pay.totalDays+" driver-day"+(pay.totalDays!==1?"s":""))),
@@ -833,7 +916,13 @@ function MyLoads(props){
     act(function(){return db.updateLoad(l.id,{status:status});});
   }
   var STATUS_OPTS=[{v:"assigned",l:"Not Started"},{v:"inprogress",l:"In Progress"},{v:"completed",l:"Completed"}];
+  var n1=useState(("Notification"in window)?Notification.permission:"unsupported"); var notifPerm=n1[0]; var setNotifPerm=n1[1];
+  function enableAlerts(){if(!("Notification"in window))return;Notification.requestPermission().then(function(p){setNotifPerm(p);});}
   return h("div",{className:"space-y-3"},
+    (("Notification"in window)&&notifPerm!=="granted")
+      ? h("button",{onClick:enableAlerts,className:"w-full bg-amber-50 border border-amber-200 text-amber-800 rounded-xl p-3 text-sm font-medium flex items-center justify-center gap-2"},
+          notifPerm==="denied"?"🔔 Alerts are blocked — turn on notifications for this app in your phone settings":"🔔 Turn on alerts for new assignments")
+      : null,
     newCount>0?h("div",{className:"bg-teal-600 text-white rounded-xl p-3 flex items-center gap-2 text-sm font-medium"},"🔔 You have "+newCount+" new "+(newCount===1?"assignment":"assignments")+"."):null,
     h(TodaySummary,{loads:my}),
     h("h2",{className:"font-semibold text-slate-700"},"Active Loads · "+active.length),
