@@ -79,13 +79,16 @@ function downloadSheets(filename,sheets){
   var blob=new Blob([csv],{type:"text/csv;charset=utf-8;"});var url=URL.createObjectURL(blob);
   var a=document.createElement("a");a.href=url;a.download=filename+".csv";document.body.appendChild(a);a.click();document.body.removeChild(a);setTimeout(function(){URL.revokeObjectURL(url);},1000);
 }
+function swReady(){
+  if(!("serviceWorker"in navigator))return Promise.reject(new Error("no sw"));
+  return Promise.race([navigator.serviceWorker.ready,new Promise(function(_,rej){setTimeout(function(){rej(new Error("sw timeout"));},1500);})]);
+}
 function notify(title,body){
-  if(!("Notification"in window)||Notification.permission!=="granted")return;
-  try{
-    if(navigator.serviceWorker&&navigator.serviceWorker.ready){
-      navigator.serviceWorker.ready.then(function(reg){reg.showNotification(title,{body:body,tag:"hhd-load",renotify:true});}).catch(function(){try{new Notification(title,{body:body});}catch(e){}});
-    }else{new Notification(title,{body:body});}
-  }catch(e){}
+  if(!("Notification"in window)||Notification.permission!=="granted")return Promise.resolve(false);
+  var opts={body:body,tag:"hhd-"+Date.now(),renotify:true};
+  return swReady().then(function(reg){return reg.showNotification(title,opts);}).then(function(){return true;}).catch(function(){
+    try{new Notification(title,opts);return true;}catch(e){return false;}
+  });
 }
 
 function toISO(d){var x=new Date(d);return x.getFullYear()+"-"+String(x.getMonth()+1).padStart(2,"0")+"-"+String(x.getDate()).padStart(2,"0");}
@@ -337,7 +340,6 @@ function SignIn(props){
 function App(){
   if(!configured) return h(SetupScreen,null);
   var s1=useState(loadIdentity()); var identity=s1[0]; var setIdentity=s1[1];
-  var identityRef=useRef(identity); identityRef.current=identity;
   var s2=useState([]); var drivers=s2[0]; var setDrivers=s2[1];
   var s3=useState({}); var schedule=s3[0]; var setSchedule=s3[1];
   var s4=useState([]); var loads=s4[0]; var setLoads=s4[1];
@@ -370,22 +372,27 @@ function App(){
   useEffect(function(){refresh(true);},[refresh]);
   useEffect(function(){
     var ch;
-    try{ch=sb.channel("hhd")
-      .on("postgres_changes",{event:"*",schema:"public"},function(){refresh(false);})
-      .on("postgres_changes",{event:"INSERT",schema:"public",table:"loads"},function(payload){
-        var id=identityRef.current; var row=payload&&payload.new;
-        if(id&&id.role==="driver"&&row&&row.driver_id===id.driverId){
-          var mtt=row.move_type?(schedInfo(row.move_type)||{}).label:""; 
-          notify("New load assigned",(mtt?mtt+" move":"New move")+(row.work_date?" · "+fmtMDY(row.work_date):""));
-        }
-      })
-      .subscribe();}catch(e){}
+    try{ch=sb.channel("hhd").on("postgres_changes",{event:"*",schema:"public"},function(){refresh(false);}).subscribe();}catch(e){}
     var t=setInterval(function(){refresh(false);},12000);
     function onFocus(){refresh(false);}
     window.addEventListener("focus",onFocus);
     document.addEventListener("visibilitychange",function(){if(!document.hidden)refresh(false);});
     return function(){clearInterval(t);window.removeEventListener("focus",onFocus);try{sb.removeChannel(ch);}catch(e){}};
   },[refresh]);
+  // Notify the signed-in driver when a NEW load shows up (works via realtime OR the polling refresh).
+  var seenLoadsRef=useRef(null);
+  useEffect(function(){
+    if(!identity||identity.role!=="driver"){seenLoadsRef.current=null;return;}
+    var mine=loads.filter(function(l){return l.driverId===identity.driverId;});
+    if(seenLoadsRef.current===null){seenLoadsRef.current=new Set(mine.map(function(l){return l.id;}));return;}
+    mine.forEach(function(l){
+      if(!seenLoadsRef.current.has(l.id)&&(l.status||"assigned")!=="completed"){
+        var mtt=l.moveType?(schedInfo(l.moveType)||{}).label:"";
+        notify("New load assigned",(mtt?mtt+" move":"New move")+(l.date?" · "+fmtMDY(l.date):""));
+      }
+      seenLoadsRef.current.add(l.id);
+    });
+  },[loads,identity]);
   useEffect(function(){
     function fn(e){e.preventDefault();setInstallEvt(e);}
     window.addEventListener("beforeinstallprompt",fn);
@@ -917,7 +924,7 @@ function MyLoads(props){
   }
   var STATUS_OPTS=[{v:"assigned",l:"Not Started"},{v:"inprogress",l:"In Progress"},{v:"completed",l:"Completed"}];
   var n1=useState(("Notification"in window)?Notification.permission:"unsupported"); var notifPerm=n1[0]; var setNotifPerm=n1[1];
-  function enableAlerts(){if(!("Notification"in window))return;Notification.requestPermission().then(function(p){setNotifPerm(p);});}
+  function enableAlerts(){if(!("Notification"in window))return;Notification.requestPermission().then(function(p){setNotifPerm(p);if(p==="granted")notify("Alerts are on ✅","You'll be notified here when a new load is assigned to you.");});}
   return h("div",{className:"space-y-3"},
     (("Notification"in window)&&notifPerm!=="granted")
       ? h("button",{onClick:enableAlerts,className:"w-full bg-amber-50 border border-amber-200 text-amber-800 rounded-xl p-3 text-sm font-medium flex items-center justify-center gap-2"},
