@@ -42,6 +42,28 @@ var useRef = React.useRef;
 var configured = SUPABASE_URL.indexOf("PASTE") === -1 && SUPABASE_ANON_KEY.indexOf("PASTE") === -1;
 var sb = configured ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
 
+// Web Push (server-sent notifications that arrive even when the app is closed)
+var VAPID_PUBLIC = "BBoNkW7H2xylA5y9lK9AV4ZaxyDIZRwnFZxgsF9wSg0OBE8soAihF11_TDyQIydypSMqQAVxSvj37JSmLPo7YfI";
+function urlB64ToUint8Array(b64){
+  var pad="=".repeat((4-b64.length%4)%4);
+  var base=(b64+pad).replace(/-/g,"+").replace(/_/g,"/");
+  var raw=atob(base);var out=new Uint8Array(raw.length);
+  for(var i=0;i<raw.length;i++)out[i]=raw.charCodeAt(i);
+  return out;
+}
+function subscribeToPush(driverId){
+  if(!driverId||!("serviceWorker"in navigator)||!("PushManager"in window))return;
+  navigator.serviceWorker.ready.then(function(reg){
+    return reg.pushManager.getSubscription().then(function(existing){
+      return existing||reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:urlB64ToUint8Array(VAPID_PUBLIC)});
+    });
+  }).then(function(sub){
+    if(!sub||!sb)return;
+    var j=sub.toJSON();
+    if(j&&j.keys)return db.savePushSub(driverId,j.endpoint,j.keys.p256dh,j.keys.auth);
+  }).catch(function(e){});
+}
+
 var MOVE_TYPES = [
   {id:"maxxim", label:"Maxxim",      abbr:"MAX",  chip:"bg-red-500 text-white",         dot:"bg-red-500"},
   {id:"solaris",label:"Solaris",     abbr:"SOL",  chip:"bg-sky-400 text-white",         dot:"bg-sky-400"},
@@ -83,11 +105,12 @@ function swReady(){
   if(!("serviceWorker"in navigator))return Promise.reject(new Error("no sw"));
   return Promise.race([navigator.serviceWorker.ready,new Promise(function(_,rej){setTimeout(function(){rej(new Error("sw timeout"));},1500);})]);
 }
-function notify(title,body,url){
+function notify(title,body,opts){
+  opts=opts||{};
   if(!("Notification"in window)||Notification.permission!=="granted")return Promise.resolve(false);
-  var opts={body:body,tag:"hhd-"+Date.now(),renotify:true,data:{url:url||"./"}};
-  return swReady().then(function(reg){return reg.showNotification(title,opts);}).then(function(){return true;}).catch(function(){
-    try{new Notification(title,opts);return true;}catch(e){return false;}
+  var o={body:body,tag:opts.tag||("hhd-"+Date.now()),renotify:opts.renotify!==false,data:{url:opts.url||"./"}};
+  return swReady().then(function(reg){return reg.showNotification(title,o);}).then(function(){return true;}).catch(function(){
+    try{new Notification(title,o);return true;}catch(e){return false;}
   });
 }
 // Notification body listing the assignment details a driver needs at a glance.
@@ -205,6 +228,8 @@ var db = {
   deleteLoad:   function(id){return sb.from("loads").delete().eq("id",id);},
   setSetting:   function(key,value){return sb.from("settings").upsert({key:key,value:value});},
   setCrews:     function(arr){return sb.from("settings").upsert({key:"crews",value:JSON.stringify(arr)});},
+  savePushSub:  function(driverId,endpoint,p256dh,auth){return sb.from("push_subscriptions").upsert({driver_id:driverId,endpoint:endpoint,p256dh:p256dh,auth:auth},{onConflict:"endpoint"});},
+  notifyDriver: function(payload){try{return sb.functions.invoke("notify-driver",{body:payload});}catch(e){return Promise.resolve();}},
   setDayRates:  function(arr){return sb.from("settings").upsert({key:"dayrate_history",value:JSON.stringify(arr)});},
   clearSetting: function(key){return sb.from("settings").delete().eq("key",key);},
   wipe: async function(){
@@ -381,6 +406,9 @@ function App(){
 
   useEffect(function(){refresh(true);},[refresh]);
   useEffect(function(){
+    if(identity&&identity.role==="driver"&&("Notification"in window)&&Notification.permission==="granted"){subscribeToPush(identity.driverId);}
+  },[identity]);
+  useEffect(function(){
     var ch;
     try{ch=sb.channel("hhd").on("postgres_changes",{event:"*",schema:"public"},function(){refresh(false);}).subscribe();}catch(e){}
     var t=setInterval(function(){refresh(false);},8000);
@@ -406,7 +434,7 @@ function App(){
       if(seenLoadsRef.current.has(l.id))return;
       seenLoadsRef.current.add(l.id);
       if((l.status||"assigned")!=="completed"){
-        notify("New load assigned",loadNotifyBody(l),"./");
+        notify("New load assigned",loadNotifyBody(l),{url:"./",tag:"hhd-load-"+l.driverId+"-"+l.date,renotify:false});
       }
     });
   },[loads,identity,loading]);
@@ -475,6 +503,8 @@ function DispatchBoard(props){
       act(function(){return db.updateLoad(id,loadToRow(patch)).then(function(){return db.setSchedule(patch.driverId,patch.date,patch.moveType);});},"Updated");
     } else {
       act(function(){return db.insertLoad(data).then(function(){return db.setSchedule(data.driverId,data.date,data.moveType);});},"Load assigned");
+      // Fire a server push so the driver is alerted even if their app is closed.
+      try{db.notifyDriver({driverId:data.driverId,title:"New load assigned",body:loadNotifyBody(data),url:"./",tag:"hhd-load-"+(data.driverId||"")+"-"+(data.date||"")});}catch(e){}
     }
     setEditing(null);
   }
@@ -941,8 +971,8 @@ function MyLoads(props){
   }
   var STATUS_OPTS=[{v:"assigned",l:"Not Started"},{v:"inprogress",l:"In Progress"},{v:"completed",l:"Completed"}];
   var n1=useState(("Notification"in window)?Notification.permission:"unsupported"); var notifPerm=n1[0]; var setNotifPerm=n1[1];
-  function enableAlerts(){if(!("Notification"in window))return;Notification.requestPermission().then(function(p){setNotifPerm(p);if(p==="granted")notify("Alerts are on ✅","You'll be notified here when a new load is assigned to you.");});}
-  function testAlert(){notify("Test alert ✅","Notifications are working on this phone. New assignments will show here.","./");}
+  function enableAlerts(){if(!("Notification"in window))return;Notification.requestPermission().then(function(p){setNotifPerm(p);if(p==="granted"){notify("Alerts are on ✅","You'll be notified here when a new load is assigned to you.");subscribeToPush(identity.driverId);}});}
+  function testAlert(){notify("Test alert ✅","Notifications are working on this phone. New assignments will show here.",{url:"./"});}
   return h("div",{className:"space-y-3"},
     ("Notification"in window)
       ? (notifPerm==="granted"
