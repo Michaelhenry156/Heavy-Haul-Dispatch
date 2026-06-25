@@ -90,6 +90,16 @@ function notify(title,body,url){
     try{new Notification(title,opts);return true;}catch(e){return false;}
   });
 }
+// Notification body listing the assignment details a driver needs at a glance.
+function loadNotifyBody(l){
+  var lines=[];
+  var mtt=l.moveType?(schedInfo(l.moveType)||{}).label:"";
+  if(mtt)lines.push("Move Type: "+mtt);
+  if(l.date)lines.push("Date: "+fmtMDY(l.date));
+  if(l.crewName)lines.push("Crew: "+l.crewName);
+  if(l.assignedBy&&l.assignedBy.name)lines.push("Assigned By: "+l.assignedBy.name);
+  return lines.join("\n");
+}
 
 function toISO(d){var x=new Date(d);return x.getFullYear()+"-"+String(x.getMonth()+1).padStart(2,"0")+"-"+String(x.getDate()).padStart(2,"0");}
 function parseISO(s){var p=s.split("-").map(Number);return new Date(p[0],p[1]-1,p[2]);}
@@ -381,17 +391,22 @@ function App(){
   },[refresh]);
   // Notify the signed-in driver when a NEW load shows up (works via realtime OR the polling refresh).
   var seenLoadsRef=useRef(null);
+  var seenForRef=useRef(null);
   useEffect(function(){
-    if(!identity||identity.role!=="driver"){seenLoadsRef.current=null;return;}
+    if(!identity||identity.role!=="driver"){seenLoadsRef.current=null;seenForRef.current=null;return;}
     if(loading)return; // wait for the first real data load before deciding what's "new"
     var mine=loads.filter(function(l){return l.driverId===identity.driverId;});
-    if(seenLoadsRef.current===null){seenLoadsRef.current=new Set(mine.map(function(l){return l.id;}));return;}
+    // (Re)seed whenever there's no baseline yet OR the signed-in driver changed.
+    if(seenLoadsRef.current===null||seenForRef.current!==identity.driverId){
+      seenLoadsRef.current=new Set(mine.map(function(l){return l.id;}));
+      seenForRef.current=identity.driverId;
+      return;
+    }
     mine.forEach(function(l){
       if(seenLoadsRef.current.has(l.id))return;
       seenLoadsRef.current.add(l.id);
       if((l.status||"assigned")!=="completed"){
-        var mtt=l.moveType?(schedInfo(l.moveType)||{}).label:"";
-        notify("New load assigned",(mtt?mtt+" move":"New move")+(l.date?" · "+fmtMDY(l.date):""),"./");
+        notify("New load assigned",loadNotifyBody(l),"./");
       }
     });
   },[loads,identity,loading]);
@@ -927,10 +942,13 @@ function MyLoads(props){
   var STATUS_OPTS=[{v:"assigned",l:"Not Started"},{v:"inprogress",l:"In Progress"},{v:"completed",l:"Completed"}];
   var n1=useState(("Notification"in window)?Notification.permission:"unsupported"); var notifPerm=n1[0]; var setNotifPerm=n1[1];
   function enableAlerts(){if(!("Notification"in window))return;Notification.requestPermission().then(function(p){setNotifPerm(p);if(p==="granted")notify("Alerts are on ✅","You'll be notified here when a new load is assigned to you.");});}
+  function testAlert(){notify("Test alert ✅","Notifications are working on this phone. New assignments will show here.","./");}
   return h("div",{className:"space-y-3"},
-    (("Notification"in window)&&notifPerm!=="granted")
-      ? h("button",{onClick:enableAlerts,className:"w-full bg-amber-50 border border-amber-200 text-amber-800 rounded-xl p-3 text-sm font-medium flex items-center justify-center gap-2"},
-          notifPerm==="denied"?"🔔 Alerts are blocked — turn on notifications for this app in your phone settings":"🔔 Turn on alerts for new assignments")
+    ("Notification"in window)
+      ? (notifPerm==="granted"
+          ? h("button",{onClick:testAlert,className:"w-full bg-teal-50 border border-teal-200 text-teal-800 rounded-xl p-2.5 text-sm font-medium flex items-center justify-center gap-2"},"🔔 Alerts are on — tap to send a test")
+          : h("button",{onClick:enableAlerts,className:"w-full bg-amber-50 border border-amber-200 text-amber-800 rounded-xl p-3 text-sm font-medium flex items-center justify-center gap-2"},
+              notifPerm==="denied"?"🔔 Alerts are blocked — turn on notifications for this app in your phone settings":"🔔 Turn on alerts for new assignments"))
       : null,
     newCount>0?h("div",{className:"bg-teal-600 text-white rounded-xl p-3 flex items-center gap-2 text-sm font-medium"},"🔔 You have "+newCount+" new "+(newCount===1?"assignment":"assignments")+"."):null,
     h(TodaySummary,{loads:my}),
