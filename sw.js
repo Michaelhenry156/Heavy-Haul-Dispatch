@@ -1,4 +1,4 @@
-const CACHE = "hhd-v2";
+const CACHE = "hhd-v3";
 
 self.addEventListener("install", (e) => {
   e.waitUntil(
@@ -50,7 +50,7 @@ self.addEventListener("push", (e) => {
     self.registration.showNotification(title, {
       body: data.body || "",
       tag: data.tag || ("hhd-" + Date.now()),
-      renotify: true,
+      renotify: false,
       data: { url: data.url || "./" }
     })
   );
