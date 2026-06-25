@@ -229,7 +229,10 @@ var db = {
   setSetting:   function(key,value){return sb.from("settings").upsert({key:key,value:value});},
   setCrews:     function(arr){return sb.from("settings").upsert({key:"crews",value:JSON.stringify(arr)});},
   savePushSub:  function(driverId,endpoint,p256dh,auth){return sb.from("push_subscriptions").upsert({driver_id:driverId,endpoint:endpoint,p256dh:p256dh,auth:auth},{onConflict:"endpoint"});},
-  notifyDriver: function(payload){try{return sb.functions.invoke("notify-driver",{body:payload});}catch(e){return Promise.resolve();}},
+  notifyDriver: function(payload){
+    function go(){return sb.functions.invoke("notify-driver",{body:payload}).then(function(r){if(r&&r.error)throw r.error;return r;});}
+    try{return go().catch(function(){return go();}).catch(function(){});}catch(e){return Promise.resolve();}
+  },
   setDayRates:  function(arr){return sb.from("settings").upsert({key:"dayrate_history",value:JSON.stringify(arr)});},
   clearSetting: function(key){return sb.from("settings").delete().eq("key",key);},
   wipe: async function(){
@@ -406,7 +409,13 @@ function App(){
 
   useEffect(function(){refresh(true);},[refresh]);
   useEffect(function(){
-    if(identity&&identity.role==="driver"&&("Notification"in window)&&Notification.permission==="granted"){subscribeToPush(identity.driverId);}
+    if(!(identity&&identity.role==="driver"))return;
+    function doSub(){if(("Notification"in window)&&Notification.permission==="granted")subscribeToPush(identity.driverId);}
+    doSub();
+    function onVis(){if(!document.hidden)doSub();}
+    window.addEventListener("focus",doSub);
+    document.addEventListener("visibilitychange",onVis);
+    return function(){window.removeEventListener("focus",doSub);document.removeEventListener("visibilitychange",onVis);};
   },[identity]);
   useEffect(function(){
     var ch;
