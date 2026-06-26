@@ -1306,13 +1306,23 @@ function ManageTab(props){
 // ---- LocLine ----
 function isLink(v){return /^https?:\/\//i.test((v||"").trim());}
 function LocLine(props){
+  var items=[];
+  if(props.lease)items.push({href:pinHref(props.lease),icon:"🧭",label:"Lease Road Entrance",sub:isLink(props.lease)?"Tap to open in Maps":props.lease});
+  if(props.coords)items.push({href:pinHref(props.coords),icon:"📍",label:"Location",sub:isLink(props.coords)?"Tap to open in Maps":props.coords});
+  if(props.pin)items.push({href:pinHref(props.pin),icon:"📌",label:"Pin drop",sub:"Tap to open in Maps"});
   return h("div",null,
     h("span",{className:"text-[10px] font-bold uppercase text-slate-400"},props.label),
-    h("div",{className:"font-medium text-slate-800"},props.pad||"—"),
-    (props.lease||props.coords||props.pin)?h("div",{className:"flex flex-col gap-0.5 mt-0.5"},
-      props.lease?h("a",{href:pinHref(props.lease),target:"_blank",rel:"noreferrer",className:"text-[11px] text-teal-700"},"🧭 Lease Road Entrance"+(isLink(props.lease)?" — open in Maps":": "+props.lease)):null,
-      props.coords?h("a",{href:pinHref(props.coords),target:"_blank",rel:"noreferrer",className:"text-[11px] text-teal-700"},"📍 Location"+(isLink(props.coords)?" — open in Maps":": "+props.coords)):null,
-      props.pin?h("a",{href:pinHref(props.pin),target:"_blank",rel:"noreferrer",className:"text-[11px] text-teal-700 font-semibold"},"📌 Open pin drop in Maps"):null):null);
+    h("div",{className:"font-medium text-slate-800 mb-1.5"},props.pad||"—"),
+    items.length?h("div",{className:"flex flex-col gap-2.5"},
+      items.map(function(it,i){
+        return h("a",{key:i,href:it.href,target:"_blank",rel:"noreferrer",
+          className:"flex items-center gap-3 bg-teal-50 border border-teal-200 rounded-xl px-3 py-3 active:bg-teal-100"},
+          h("span",{className:"text-xl shrink-0"},it.icon),
+          h("span",{className:"flex-1 min-w-0"},
+            h("span",{className:"block text-sm font-bold text-teal-800 leading-tight"},it.label),
+            h("span",{className:"block text-[11px] text-teal-600 truncate"},it.sub)),
+          h("span",{className:"shrink-0 text-[11px] font-semibold text-white bg-teal-600 rounded-lg px-2.5 py-1.5"},"Open ↗"));
+      })):null);
 }
 
 // ---- MyLoads ----
