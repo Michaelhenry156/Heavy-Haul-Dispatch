@@ -782,9 +782,19 @@ function DispatchBoard(props){
   function byStatus(k){return dayLoads.filter(function(l){return statusCol(statusFromMoves(getMoves(l),l.status))===k;});}
   function saveLoad(data){
     if(data.id){
+      var orig=loads.find(function(x){return x.id===data.id;});
+      var reassigned=orig&&orig.driverId&&data.driverId&&orig.driverId!==data.driverId;
       var id=data.id; var patch=Object.assign({},data); delete patch.id;
-      act(function(){return db.updateLoad(id,loadToRow(patch)).then(function(){return db.setSchedule(patch.driverId,patch.date,patch.moveType);});},"Updated");
-      audit("Edited load",driverName(patch.driverId)+" · "+fmtMDY(patch.date));
+      act(function(){return db.updateLoad(id,loadToRow(patch))
+        .then(function(){return reassigned?db.updateLoad(id,{acknowledged:false,acknowledged_at:null}):Promise.resolve();})
+        .then(function(){return db.setSchedule(patch.driverId,patch.date,patch.moveType);});},
+        reassigned?"Reassigned to "+driverName(data.driverId):"Updated");
+      if(reassigned){
+        audit("Reassigned load",driverName(orig.driverId)+" → "+driverName(data.driverId)+" · "+fmtMDY(data.date));
+        try{db.notifyDriver({driverId:data.driverId,title:"Load reassigned to you",body:loadNotifyBody(data),url:"./",tag:"hhd-load-"+(data.driverId||"")+"-"+(data.date||"")});}catch(e){}
+      } else {
+        audit("Edited load",driverName(patch.driverId)+" · "+fmtMDY(patch.date));
+      }
     } else {
       act(function(){return db.insertLoad(data).then(function(){return db.setSchedule(data.driverId,data.date,data.moveType);});},"Load assigned");
       audit("Assigned load","→ "+driverName(data.driverId)+" · "+fmtMDY(data.date));
@@ -1015,6 +1025,9 @@ function LoadModal(props){
             sel&&sel.phone?h("a",{href:"tel:"+sel.phone,className:"text-teal-700 shrink-0",title:"Call "+sel.name},"📞"):null,
             isNew&&f.driverIds.length>1?h("button",{onClick:function(){removeDriverRow(idx);},className:"text-red-400 shrink-0 p-1"},"✕"):null);
         }),
+        !isNew?((filledDriverIds[0]&&filledDriverIds[0]!==load.driverId)
+          ?h("div",{className:"text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5 font-medium"},"↪ Reassigning to "+((drivers.find(function(d){return d.id===filledDriverIds[0];})||{}).name||"new driver")+" — they'll be notified and the load keeps all its details and progress.")
+          :h("div",{className:"text-[11px] text-slate-500"},"To reassign this load, just pick a different driver — all details and progress carry over.")):null,
         isNew&&filledDriverIds.length>1?h("div",{className:"text-[11px] text-teal-700 bg-teal-50 rounded-lg px-2.5 py-1.5"},"✓ Will create "+filledDriverIds.length+" separate assignments — one per driver"):null),
       h(Field,{label:"Assigned By *"},
         managers.length===0
