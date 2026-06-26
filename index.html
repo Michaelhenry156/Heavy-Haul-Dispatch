@@ -56,6 +56,44 @@ button:active{transform:scale(.98);}
 *::-webkit-scrollbar-track{background:transparent;}
 :focus-visible{outline:2px solid var(--brand);outline-offset:2px;}
 @media (prefers-reduced-motion: reduce){*{transition:none !important;animation:none !important;}}
+/* Driver dark "cab mode" — scoped to the .cab subtree only */
+.cab{background:#0e1521;}
+.cab .bg-white{background:#16202e!important;}
+.cab .bg-white\/70{background:rgba(22,32,46,.6)!important;}
+.cab .bg-white\/95{background:rgba(22,32,46,.96)!important;}
+.cab .bg-slate-50{background:#1b2636!important;}
+.cab .bg-slate-100{background:#1f2c3e!important;}
+.cab .bg-slate-300{background:#46566c!important;}
+.cab .text-slate-800{color:#eef3f9!important;}
+.cab .text-slate-700{color:#dde6f1!important;}
+.cab .text-slate-600{color:#b0bdce!important;}
+.cab .text-slate-500{color:#8b9bb0!important;}
+.cab .text-slate-400{color:#74849a!important;}
+.cab .text-slate-300{color:#57667b!important;}
+.cab .text-slate-200{color:#c6d2e0!important;}
+.cab .border-slate-100{border-color:#233044!important;}
+.cab .border-slate-200{border-color:#2b3950!important;}
+.cab .border-slate-300{border-color:#3a4a61!important;}
+.cab .bg-teal-50{background:#11302b!important;}
+.cab .bg-teal-100{background:#17413a!important;}
+.cab .text-teal-700,.cab .text-teal-600{color:#2dd4bf!important;}
+.cab .text-teal-800{color:#5ee0c8!important;}
+.cab .border-teal-100{border-color:#1d473f!important;}
+.cab .border-teal-200{border-color:#245449!important;}
+.cab .border-teal-300{border-color:#2e6657!important;}
+.cab .bg-amber-50{background:#2d2310!important;}
+.cab .text-amber-800{color:#f0bf6a!important;}
+.cab .text-amber-600{color:#fbbf24!important;}
+.cab .border-amber-200{border-color:#4a3a18!important;}
+.cab .bg-green-50{background:#0f2c1d!important;}
+.cab .bg-green-100{background:#163a26!important;}
+.cab .text-green-700,.cab .text-green-600{color:#4ade80!important;}
+.cab .border-green-200{border-color:#20502f!important;}
+.cab .bg-red-50{background:#341619!important;}
+.cab .text-red-700,.cab .text-red-600{color:#f87171!important;}
+.cab .text-red-400,.cab .text-red-300{color:#fca5a5!important;}
+.cab .border-red-200{border-color:#4e2329!important;}
+.cab .inp{background:#0f1a27!important;border-color:#34465c!important;color:#eef3f9!important;}
 </style>
 </head>
 <body>
@@ -558,6 +596,8 @@ function App(){
   var s18=useState(function(){return C0.places||[];}); var places=s18[0]; var setPlaces=s18[1];
   var s19=useState(isOnline()); var online=s19[0]; var setOnline=s19[1];
   var s20=useState(function(){return readOutbox();}); var pending=s20[0]; var setPending=s20[1];
+  var s21=useState(function(){try{var v=localStorage.getItem("hhd_cab");return v===null?true:v==="1";}catch(e){return true;}}); var cabMode=s21[0]; var setCabMode=s21[1];
+  function toggleCab(){var v=!cabMode;setCabMode(v);try{localStorage.setItem("hhd_cab",v?"1":"0");}catch(e){}}
 
   function showToast(m){setToast(m);setTimeout(function(){setToast("");},1800);}
 
@@ -673,7 +713,8 @@ function App(){
   if(!identity) return h(SignIn,{drivers:drivers,managers:managers,passwords:passwords,onSignIn:signIn});
 
   var isDispatch=identity.role==="dispatch";
-  return h("div",{className:"min-h-screen text-slate-800"},
+  var cabOn=!isDispatch&&cabMode;
+  return h("div",{className:"min-h-screen text-slate-800"+(cabOn?" cab":"")},
     h("header",{className:"bg-gradient-to-b from-slate-900 to-slate-800 text-white sticky top-0 z-30 shadow-lg",style:{paddingTop:"env(safe-area-inset-top)"}},
       h("div",{className:"h-1 bg-gradient-to-r from-teal-400 via-teal-500 to-amber-400"}),
       h("div",{className:"max-w-6xl mx-auto px-3 py-2.5 flex items-center gap-2.5"},
@@ -683,6 +724,7 @@ function App(){
           h("div",{className:"text-[11px] text-slate-400 font-medium"},isDispatch?(identity.name?identity.name+" · Manager":"Manager"):driverName(identity.driverId))),
         h("div",{className:"ml-auto flex items-center gap-1"},
           installEvt&&h("button",{onClick:doInstall,className:"text-xs bg-teal-500 hover:bg-teal-400 rounded-lg px-2.5 py-1.5 font-semibold"},"Install"),
+          !isDispatch&&h("button",{onClick:toggleCab,className:"p-2 rounded-lg hover:bg-white/10 text-slate-300",title:cabMode?"Switch to light":"Cab mode (dark)"},cabMode?"☀️":"🌙"),
           h("button",{onClick:function(){refresh(true);},className:"p-2 rounded-lg hover:bg-white/10 text-slate-300",title:"Refresh"},"🔄"),
           h("button",{onClick:signOut,className:"p-2 rounded-lg hover:bg-white/10 text-slate-300",title:"Sign out"},"🚪"))),
       h("nav",{className:"max-w-6xl mx-auto px-2 pb-1.5 flex gap-1 overflow-x-auto"},
@@ -720,6 +762,9 @@ function DispatchBoard(props){
   var s5=useState(""); var fCrew=s5[0]; var setFCrew=s5[1];
   var s6=useState(""); var fYard=s6[0]; var setFYard=s6[1];
   var s7=useState(false); var showArch=s7[0]; var setShowArch=s7[1];
+  var s8=useState("board"); var boardView=s8[0]; var setBoardView=s8[1];
+  var s9=useState(""); var sortKey=s9[0]; var setSortKey=s9[1];
+  var s10=useState("asc"); var sortDir=s10[0]; var setSortDir=s10[1];
   var active=useMemo(function(){return loads.filter(function(l){return !l.archived;});},[loads]);
   var archivedLoads=useMemo(function(){return loads.filter(function(l){return l.archived;}).sort(function(a,b){return (b.date||"").localeCompare(a.date||"");});},[loads]);
   var problems=useMemo(function(){return active.filter(function(l){return l.problemType&&statusCol(l.status||"assigned")!=="completed";}).sort(function(a,b){return (b.problemAt||0)-(a.problemAt||0);});},[active]);
@@ -753,6 +798,65 @@ function DispatchBoard(props){
   function delForever(id){var l=loads.find(function(x){return x.id===id;});if(!window.confirm("Permanently delete this load? Use this for canceled loads. This cannot be undone."))return;act(function(){return db.deleteLoad(id);},"Deleted permanently");audit("Deleted load (permanent)",l?driverName(l.driverId)+" · "+fmtMDY(l.date):"");setEditing(null);}
   function clearProb(l){act(function(){return db.clearProblem(l.id);},"Problem cleared");audit("Cleared problem",driverName(l.driverId)+" · "+fmtMDY(l.date));}
   var cols=[{key:"assigned",label:"Assigned",color:"border-slate-300"},{key:"inprogress",label:"In Progress",color:"border-amber-400"},{key:"completed",label:"Completed",color:"border-green-400"}];
+  var statusOrder={assigned:0,inprogress:1,completed:2};
+  function setSort(k){if(sortKey===k){setSortDir(sortDir==="asc"?"desc":"asc");}else{setSortKey(k);setSortDir("asc");}}
+  function sortVal(l,k){
+    var ms=getMoves(l); var derived=statusFromMoves(ms,l.status);
+    if(k==="driver")return (driverName(l.driverId)||"").toLowerCase();
+    if(k==="status")return statusOrder[statusCol(derived)];
+    if(k==="move")return l.moveType||"";
+    if(k==="route")return ((ms[0]&&ms[0].pickupPad)||"").toLowerCase();
+    if(k==="truck")return ((l.truck||"")+" "+(l.trailer||"")).toLowerCase();
+    if(k==="equip")return ms.map(function(m){return m.equipmentType;}).filter(Boolean).join(",").toLowerCase();
+    if(k==="delivered")return ms.filter(function(m){return moveStatus(m)==="completed";}).length;
+    if(k==="updated")return lastStatusAt(l)||l.createdAt||0;
+    if(k==="seen")return l.acknowledgedAt||0;
+    return l.createdAt||0;
+  }
+  var sortedLoads=useMemo(function(){
+    var arr=dayLoads.slice();
+    arr.sort(function(a,b){
+      var va=sortVal(a,sortKey),vb=sortVal(b,sortKey);
+      if(va<vb)return sortDir==="asc"?-1:1;
+      if(va>vb)return sortDir==="asc"?1:-1;
+      return (a.createdAt||0)-(b.createdAt||0);
+    });
+    return arr;
+  },[dayLoads,sortKey,sortDir]);
+  function sortHead(k,label){
+    return h("th",{onClick:function(){setSort(k);},className:"px-2 py-2 text-left font-bold text-slate-500 cursor-pointer select-none whitespace-nowrap hover:text-slate-700"},
+      label+(sortKey===k?(sortDir==="asc"?" ▲":" ▼"):""));
+  }
+  function renderTable(){
+    if(dayLoads.length===0)return h(Empty,{msg:"No loads for this day."});
+    return h("div",{className:"bg-white rounded-xl shadow-sm overflow-x-auto"},
+      h("table",{className:"w-full text-xs"},
+        h("thead",{className:"border-b border-slate-200 bg-slate-50"},
+          h("tr",null,
+            h("th",{className:"w-1"}),
+            sortHead("driver","Driver"),sortHead("status","Status"),sortHead("move","Move"),
+            sortHead("route","Route"),sortHead("truck","Truck / Trailer"),sortHead("equip","Equipment"),
+            sortHead("delivered","Done"),sortHead("updated","Updated"),sortHead("seen","Seen"))),
+        h("tbody",null,
+          sortedLoads.map(function(l){
+            var ms=getMoves(l); var dn=ms.filter(function(m){return moveStatus(m)==="completed";}).length;
+            var derived=statusFromMoves(ms,l.status); var si=statusInfo(derived);
+            var spineHex=l.problemType?"#ef4444":derived==="completed"?"#22c55e":derived==="inprogress"?"#f59e0b":"#cbd5e1";
+            var eqList=ms.map(function(m){return m.equipmentType;}).filter(function(v,i,a){return v&&a.indexOf(v)===i;});
+            return h("tr",{key:l.id,onClick:function(){setEditing(l);},
+              className:"border-b border-slate-100 hover:bg-slate-50 cursor-pointer "+(l.problemType?"bg-red-50":"")},
+              h("td",{style:{borderLeft:"4px solid "+spineHex}}),
+              h("td",{className:"px-2 py-2 font-semibold text-slate-800 whitespace-nowrap"},driverName(l.driverId),l.problemType?h("span",{className:"ml-1 text-red-600"},"⚠"):null),
+              h("td",{className:"px-2 py-2"},h("span",{className:"text-[10px] font-bold px-1.5 py-0.5 rounded-full "+(derived==="completed"?"bg-green-100 text-green-700":derived==="inprogress"?"bg-amber-100 text-amber-700":"bg-slate-100 text-slate-600")},si.l)),
+              h("td",{className:"px-2 py-2"},h(MoveChip,{id:l.moveType})),
+              h("td",{className:"px-2 py-2 text-slate-600 max-w-[160px] truncate"},(ms[0]?ms[0].pickupPad||"—":"—")+" → "+(ms[ms.length-1]?ms[ms.length-1].dropPad||"—":"—")),
+              h("td",{className:"px-2 py-2 text-slate-600 whitespace-nowrap"},[l.truck,l.trailer].filter(Boolean).join(" · ")||"—"),
+              h("td",{className:"px-2 py-2 text-slate-600 max-w-[120px] truncate"},eqList.join(", ")||"—"),
+              h("td",{className:"px-2 py-2 text-slate-600 tnum whitespace-nowrap"},dn+"/"+ms.length),
+              h("td",{className:"px-2 py-2 text-slate-500 tnum whitespace-nowrap"},(l.status&&l.status!=="assigned"&&lastStatusAt(l))?fmtClock(lastStatusAt(l)):"—"),
+              h("td",{className:"px-2 py-2 whitespace-nowrap"},l.acknowledgedAt?h("span",{className:"text-green-600"},"✓ "+fmtClock(l.acknowledgedAt)):h("span",{className:"text-slate-300"},"—")));
+          }))));
+  }
   return h("div",{className:"space-y-3"},
     problems.length>0?h("div",{className:"bg-red-50 border border-red-300 rounded-xl p-3 space-y-2"},
       h("div",{className:"text-sm font-bold text-red-700"},"⚠ "+problems.length+" active problem"+(problems.length!==1?"s":"")),
@@ -785,7 +889,12 @@ function DispatchBoard(props){
       h(Stat,{label:"Assigned",value:byStatus("assigned").length,color:"text-slate-700"}),
       h(Stat,{label:"In Progress",value:byStatus("inprogress").length,color:"text-amber-600"}),
       h(Stat,{label:"Completed",value:byStatus("completed").length,color:"text-green-600"})),
-    h("div",{className:"text-sm font-semibold text-slate-600"},fmtLong(date)),
+    h("div",{className:"flex items-center gap-2"},
+      h("div",{className:"text-sm font-semibold text-slate-600 flex-1"},fmtLong(date)),
+      h("div",{className:"flex bg-slate-100 rounded-lg p-0.5 text-xs font-semibold shrink-0"},
+        h("button",{onClick:function(){setBoardView("board");},className:"px-3 py-1.5 rounded-md "+(boardView==="board"?"bg-white shadow-sm text-slate-800":"text-slate-500")},"▦ Board"),
+        h("button",{onClick:function(){setBoardView("table");},className:"px-3 py-1.5 rounded-md "+(boardView==="table"?"bg-white shadow-sm text-slate-800":"text-slate-500")},"☰ Table"))),
+    boardView==="table"?renderTable():
     h("div",{className:"grid md:grid-cols-3 gap-3"},
       cols.map(function(c){
         return h("div",{key:c.key,className:"bg-white rounded-xl p-2 shadow-sm border-t-4 "+c.color},
