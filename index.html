@@ -575,6 +575,7 @@ function DispatchBoard(props){
   function delLoad(id){var l=loads.find(function(x){return x.id===id;});act(function(){return db.archiveLoad(id);},"Archived");audit("Archived load",l?driverName(l.driverId)+" · "+fmtMDY(l.date):"");setEditing(null);}
   function restore(l){act(function(){return db.restoreLoad(l.id);},"Restored");audit("Restored load",driverName(l.driverId)+" · "+fmtMDY(l.date));}
   function hardDelete(l){if(!window.confirm("Permanently delete this load? This cannot be undone."))return;act(function(){return db.deleteLoad(l.id);},"Deleted permanently");audit("Deleted load (permanent)",driverName(l.driverId)+" · "+fmtMDY(l.date));}
+  function delForever(id){var l=loads.find(function(x){return x.id===id;});if(!window.confirm("Permanently delete this load? Use this for canceled loads. This cannot be undone."))return;act(function(){return db.deleteLoad(id);},"Deleted permanently");audit("Deleted load (permanent)",l?driverName(l.driverId)+" · "+fmtMDY(l.date):"");setEditing(null);}
   function clearProb(l){act(function(){return db.clearProblem(l.id);},"Problem cleared");audit("Cleared problem",driverName(l.driverId)+" · "+fmtMDY(l.date));}
   var cols=[{key:"assigned",label:"Assigned",color:"border-slate-300"},{key:"inprogress",label:"In Progress",color:"border-amber-400"},{key:"completed",label:"Completed",color:"border-green-400"}];
   return h("div",{className:"space-y-3"},
@@ -647,12 +648,12 @@ function DispatchBoard(props){
           h("button",{onClick:function(){restore(l);},className:"text-xs bg-teal-50 text-teal-700 border border-teal-200 rounded-lg px-2.5 py-1.5 font-medium shrink-0"},"Restore"),
           h("button",{onClick:function(){hardDelete(l);},className:"text-xs text-red-500 shrink-0 px-1"},"Delete"));
       }))),
-    editing&&h(LoadModal,{drivers:drivers,schedule:schedule,managers:managers,crews:crews,trucks:trucks,trailers:trailers,allLoads:active,load:editing,onSave:saveLoad,onDelete:delLoad,onClose:function(){setEditing(null);}}));
+    editing&&h(LoadModal,{drivers:drivers,schedule:schedule,managers:managers,crews:crews,trucks:trucks,trailers:trailers,allLoads:active,load:editing,onSave:saveLoad,onDelete:delLoad,onHardDelete:delForever,onClose:function(){setEditing(null);}}));
 }
 
 // ---- LoadModal (multi-driver) ----
 function LoadModal(props){
-  var drivers=props.drivers,schedule=props.schedule,managers=props.managers,crews=props.crews||[],trucks=props.trucks||[],trailers=props.trailers||[],allLoads=props.allLoads||[],load=props.load,onSave=props.onSave,onDelete=props.onDelete,onClose=props.onClose;
+  var drivers=props.drivers,schedule=props.schedule,managers=props.managers,crews=props.crews||[],trucks=props.trucks||[],trailers=props.trailers||[],allLoads=props.allLoads||[],load=props.load,onSave=props.onSave,onDelete=props.onDelete,onHardDelete=props.onHardDelete,onClose=props.onClose;
   var isNew=!load.id;
   var existingMoves=getMoves(load);
   var s1=useState({startFrom:load.startFrom||"",startTime:load.startTime||"",driverIds:load.driverId?[load.driverId]:[""],date:load.date||todayISO(),moveType:load.moveType||"maxxim",assignedById:load.assignedBy?load.assignedBy.id||"":"",crewName:load.crewName||"",truck:load.truck||"",trailer:load.trailer||"",notes:load.notes||"",moves:existingMoves.length?existingMoves:[blankMove()]});
@@ -768,7 +769,8 @@ function LoadModal(props){
       !canSubmit?h("p",{className:"text-[11px] text-slate-400"},"Select at least one driver and an Assigned By manager to send this assignment."):null,
       h("div",{className:"flex gap-2 pt-1"},
         h("button",{disabled:!canSubmit,onClick:save,className:"flex-1 bg-teal-600 disabled:opacity-40 text-white rounded-lg py-2.5 font-medium"},isNew?("Assign"+(filledDriverIds.length>1?" ("+filledDriverIds.length+" drivers)":"")):"Save"),
-        !isNew?h("button",{onClick:function(){onDelete(load.id);},className:"px-3 rounded-lg border-2 border-red-200 text-red-600 text-sm font-medium"},"🗄 Archive"):null)));
+        !isNew?h("button",{onClick:function(){onDelete(load.id);},className:"px-3 rounded-lg border-2 border-amber-200 text-amber-700 text-sm font-medium"},"🗄 Archive"):null,
+        (!isNew&&onHardDelete)?h("button",{onClick:function(){onHardDelete(load.id);},className:"px-3 rounded-lg border-2 border-red-200 text-red-600 text-sm font-medium"},"🗑 Delete"):null)));
 }
 
 // ---- ScheduleBoard ----
