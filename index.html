@@ -150,7 +150,7 @@ function loadNotifyBody(l){
 }
 
 function toISO(d){var x=new Date(d);return x.getFullYear()+"-"+String(x.getMonth()+1).padStart(2,"0")+"-"+String(x.getDate()).padStart(2,"0");}
-function parseISO(s){var p=s.split("-").map(Number);return new Date(p[0],p[1]-1,p[2]);}
+function parseISO(s){if(!s||typeof s!=="string"){var d=new Date();return d;}var p=s.split("-").map(Number);return new Date(p[0],p[1]-1,p[2]);}
 function todayISO(){return toISO(new Date());}
 function addDays(iso,n){var d=parseISO(iso);d.setDate(d.getDate()+n);return toISO(d);}
 function fmtShort(iso){return parseISO(iso).toLocaleDateString("en-US",{weekday:"short",month:"numeric",day:"numeric"});}
@@ -277,7 +277,7 @@ var db = {
   restoreLoad:  function(id){return sb.from("loads").update({archived:false}).eq("id",id);},
   setProblem:   function(id,type,note){return sb.from("loads").update({problem_type:type,problem_note:note||null,problem_at:new Date().toISOString()}).eq("id",id);},
   clearProblem: function(id){return sb.from("loads").update({problem_type:null,problem_note:null,problem_at:null}).eq("id",id);},
-  logAudit:     function(actor,action,detail){try{return sb.from("audit_log").insert({actor:actor||"?",action:action||"",detail:detail||""});}catch(e){return Promise.resolve();}},
+  logAudit:     function(actor,action,detail){try{var p=sb.from("audit_log").insert({actor:actor||"?",action:action||"",detail:detail||""});return (p&&p.then)?p.then(function(r){return r;},function(){}):p;}catch(e){return Promise.resolve();}},
   uploadFile: async function(folder,file){
     var key=folder+"/"+Date.now()+"-"+Math.random().toString(36).slice(2,8)+"-"+safeName(file.name);
     var up=await sb.storage.from(FILE_BUCKET).upload(key,file,{upsert:false,contentType:file.type||"application/octet-stream"});
@@ -310,6 +310,40 @@ var db = {
 var ID_KEY = "hhd_identity";
 function loadIdentity(){try{return JSON.parse(localStorage.getItem(ID_KEY)||"null");}catch(e){return null;}}
 function saveIdentity(v){try{v?localStorage.setItem(ID_KEY,JSON.stringify(v)):localStorage.removeItem(ID_KEY);}catch(e){}}
+
+// ---- Offline support: data cache + write outbox ----
+var CACHE_KEY = "hhd_cache_v1";
+var OUTBOX_KEY = "hhd_outbox_v1";
+function readCache(){try{return JSON.parse(localStorage.getItem(CACHE_KEY))||null;}catch(e){return null;}}
+function writeCache(o){try{localStorage.setItem(CACHE_KEY,JSON.stringify(o));}catch(e){}}
+function readOutbox(){try{return JSON.parse(localStorage.getItem(OUTBOX_KEY))||[];}catch(e){return [];}}
+function writeOutbox(a){try{localStorage.setItem(OUTBOX_KEY,JSON.stringify(a||[]));}catch(e){}}
+function isOnline(){return (typeof navigator==="undefined")||navigator.onLine!==false;}
+// Merge a (snake_case, DB-shaped) load patch into the camelCase local model for optimistic UI.
+function applyPatchToLoad(l,p){
+  var n=Object.assign({},l);
+  if("status" in p)n.status=p.status;
+  if("status_history" in p)n.statusHistory=p.status_history;
+  if("moves" in p)n.moves=p.moves;
+  if("checklist" in p)n.checklist=p.checklist;
+  if("photos" in p)n.photos=p.photos;
+  if("acknowledged" in p)n.acknowledged=p.acknowledged;
+  if("acknowledged_at" in p)n.acknowledgedAt=p.acknowledged_at?Date.parse(p.acknowledged_at):0;
+  if("problem_type" in p)n.problemType=p.problem_type||"";
+  if("problem_note" in p)n.problemNote=p.problem_note||"";
+  if("problem_at" in p)n.problemAt=p.problem_at?Date.parse(p.problem_at):0;
+  if("archived" in p)n.archived=!!p.archived;
+  if("truck" in p)n.truck=p.truck||"";
+  if("trailer" in p)n.trailer=p.trailer||"";
+  return n;
+}
+function applyOutbox(loads){
+  var ob=readOutbox(); if(!ob.length)return loads;
+  return loads.map(function(l){
+    var ops=ob.filter(function(o){return o.id===l.id;});
+    return ops.reduce(function(acc,o){return applyPatchToLoad(acc,o.patch);},l);
+  });
+}
 
 // ---- small UI helpers ----
 function MoveChip(props){
@@ -440,42 +474,85 @@ function SignIn(props){
 // ---- App root ----
 function App(){
   if(!configured) return h(SetupScreen,null);
+  var C0=useMemo(function(){return readCache()||{};},[]);
+  var bootHadCache=useRef(!!(C0&&C0.loads));
+  var everLoaded=useRef(false);
+  var draining=useRef(false);
   var s1=useState(loadIdentity()); var identity=s1[0]; var setIdentity=s1[1];
-  var s2=useState([]); var drivers=s2[0]; var setDrivers=s2[1];
-  var s3=useState({}); var schedule=s3[0]; var setSchedule=s3[1];
-  var s4=useState([]); var loads=s4[0]; var setLoads=s4[1];
-  var s5=useState([]); var managers=s5[0]; var setManagers=s5[1];
+  var s2=useState(function(){return C0.drivers||[];}); var drivers=s2[0]; var setDrivers=s2[1];
+  var s3=useState(function(){return C0.schedule||{};}); var schedule=s3[0]; var setSchedule=s3[1];
+  var s4=useState(function(){return applyOutbox(C0.loads||[]);}); var loads=s4[0]; var setLoads=s4[1];
+  var s5=useState(function(){return C0.managers||[];}); var managers=s5[0]; var setManagers=s5[1];
   var s6=useState({}); var passwords=s6[0]; var setPasswords=s6[1];
-  var s7=useState(true); var loading=s7[0]; var setLoading=s7[1];
+  var s7=useState(!bootHadCache.current); var loading=s7[0]; var setLoading=s7[1];
   var s8=useState(""); var toast=s8[0]; var setToast=s8[1];
   var s9=useState(""); var dbError=s9[0]; var setDbError=s9[1];
   var s10=useState(identity?(identity.role==="driver"?"myloads":"dispatch"):"dispatch"); var view=s10[0]; var setView=s10[1];
   var s11=useState(null); var installEvt=s11[0]; var setInstallEvt=s11[1];
-  var s12=useState([]); var crews=s12[0]; var setCrews=s12[1];
-  var s13=useState([]); var dayRates=s13[0]; var setDayRates=s13[1];
-  var s14=useState([]); var trucks=s14[0]; var setTrucks=s14[1];
-  var s15=useState([]); var trailers=s15[0]; var setTrailers=s15[1];
-  var s16=useState([]); var auditLog=s16[0]; var setAuditLog=s16[1];
-  var s17=useState([]); var equipmentTypes=s17[0]; var setEquipmentTypes=s17[1];
-  var s18=useState([]); var places=s18[0]; var setPlaces=s18[1];
+  var s12=useState(function(){return C0.crews||[];}); var crews=s12[0]; var setCrews=s12[1];
+  var s13=useState(function(){return C0.dayRates||[];}); var dayRates=s13[0]; var setDayRates=s13[1];
+  var s14=useState(function(){return C0.trucks||[];}); var trucks=s14[0]; var setTrucks=s14[1];
+  var s15=useState(function(){return C0.trailers||[];}); var trailers=s15[0]; var setTrailers=s15[1];
+  var s16=useState(function(){return C0.auditLog||[];}); var auditLog=s16[0]; var setAuditLog=s16[1];
+  var s17=useState(function(){return C0.equipmentTypes||[];}); var equipmentTypes=s17[0]; var setEquipmentTypes=s17[1];
+  var s18=useState(function(){return C0.places||[];}); var places=s18[0]; var setPlaces=s18[1];
+  var s19=useState(isOnline()); var online=s19[0]; var setOnline=s19[1];
+  var s20=useState(function(){return readOutbox();}); var pending=s20[0]; var setPending=s20[1];
 
   function showToast(m){setToast(m);setTimeout(function(){setToast("");},1800);}
+
+  function drainOutbox(){
+    if(draining.current||!isOnline())return;
+    var ob=readOutbox(); if(!ob.length)return;
+    draining.current=true;
+    (async function(){
+      var success=0;
+      for(var i=0;i<ob.length;i++){
+        try{await db.updateLoad(ob[i].id,ob[i].patch);success++;}
+        catch(e){break;}
+      }
+      var cur=readOutbox(); var rest=cur.slice(success); writeOutbox(rest); setPending(rest);
+      draining.current=false;
+      if(success>0){try{await refresh(false);}catch(e){}}
+    })();
+  }
+  function enqueue(id,patch){var ob=readOutbox();ob.push({id:id,patch:patch,at:Date.now()});writeOutbox(ob);setPending(ob);}
+  // Optimistic load update that survives no-signal: applies locally now, syncs when possible.
+  function mutateLoad(id,patch,msg){
+    setLoads(function(prev){return prev.map(function(l){return l.id===id?applyPatchToLoad(l,patch):l;});});
+    if(isOnline()){
+      db.updateLoad(id,patch).then(function(){if(msg)showToast(msg);drainOutbox();})
+        .catch(function(){enqueue(id,patch);showToast("Saved offline — will sync");});
+    }else{
+      enqueue(id,patch);showToast("Saved offline — will sync");
+    }
+  }
 
   var refresh=useCallback(async function(spin){
     if(spin) setLoading(true);
     try{
       var d=await db.fetchAll();
       setDrivers(d.drivers); setManagers(d.managers);
-      setSchedule(d.schedule); setLoads(d.loads);
+      setSchedule(d.schedule); setLoads(applyOutbox(d.loads));
       setPasswords(d.passwords); setCrews(d.crews||[]); setDayRates(d.dayRates||[]); setTrucks(d.trucks||[]); setTrailers(d.trailers||[]); setAuditLog(d.auditLog||[]); setEquipmentTypes(d.equipmentTypes||[]); setPlaces(d.places||[]); setDbError("");
+      setOnline(true); everLoaded.current=true;
+      writeCache({drivers:d.drivers,managers:d.managers,schedule:d.schedule,loads:d.loads,crews:d.crews||[],dayRates:d.dayRates||[],trucks:d.trucks||[],trailers:d.trailers||[],equipmentTypes:d.equipmentTypes||[],places:d.places||[],auditLog:d.auditLog||[]});
+      drainOutbox();
     }catch(e){
-      console.error(e);
-      setDbError(e&&e.message?e.message:String(e));
+      setOnline(false);
+      if(!everLoaded.current&&!bootHadCache.current){setDbError(e&&e.message?e.message:String(e));}
     }
     setLoading(false);
   },[]);
 
-  useEffect(function(){refresh(true);},[refresh]);
+  useEffect(function(){refresh(!bootHadCache.current);},[refresh]);
+  useEffect(function(){
+    function onOn(){setOnline(true);drainOutbox();refresh(false);}
+    function onOff(){setOnline(false);}
+    window.addEventListener("online",onOn);
+    window.addEventListener("offline",onOff);
+    return function(){window.removeEventListener("online",onOn);window.removeEventListener("offline",onOff);};
+  },[refresh]);
   useEffect(function(){
     if(!(identity&&identity.role==="driver"))return;
     function doSub(){if(("Notification"in window)&&Notification.permission==="granted")subscribeToPush(identity.driverId);}
@@ -522,8 +599,8 @@ function App(){
   },[]);
 
   async function act(fn,msg){
-    try{await fn();await refresh(false);if(msg)showToast(msg);}
-    catch(e){console.error(e);showToast("Error — check connection");}
+    try{await fn();setOnline(true);await refresh(false);if(msg)showToast(msg);}
+    catch(e){console.error(e);setOnline(false);showToast(isOnline()?"Error — please try again":"You're offline — try again when connected");}
   }
   function signIn(id){setIdentity(id);saveIdentity(id);setView(id.role==="driver"?"myloads":"dispatch");}
   function signOut(){setIdentity(null);saveIdentity(null);}
@@ -557,13 +634,17 @@ function App(){
         :h(Fragment,null,
           h(Tab,{a:view==="myloads",on:function(){setView("myloads");},ic:"📋",l:"My Loads"}),
           h(Tab,{a:view==="myschedule",on:function(){setView("myschedule");},ic:"📅",l:"My Schedule"})))),
+    (!online||pending.length>0)?h("div",{className:(!online?"bg-amber-500":"bg-teal-600")+" text-white text-center text-xs font-semibold py-1.5 px-3"},
+      !online
+        ?("📴 Offline — showing last synced data"+(pending.length>0?" · "+pending.length+" change"+(pending.length!==1?"s":"")+" will sync when you're back online":""))
+        :("🔄 Syncing "+pending.length+" change"+(pending.length!==1?"s":"")+"…")):null,
     h("main",{className:"max-w-6xl mx-auto p-3"},
       isDispatch&&view==="dispatch"&&h(DispatchBoard,{drivers:drivers,loads:loads,schedule:schedule,managers:managers,crews:crews,trucks:trucks,trailers:trailers,equipmentTypes:equipmentTypes,places:places,driverName:driverName,act:act,audit:audit}),
       isDispatch&&view==="schedule"&&h(ScheduleBoard,{drivers:drivers,schedule:schedule,act:act}),
       isDispatch&&view==="dayrate"&&h(DayRate,{drivers:drivers,schedule:schedule,loads:loads,dayRates:dayRates,showToast:showToast}),
       isDispatch&&view==="drivers"&&h(DriversTab,{drivers:drivers,act:act}),
       isDispatch&&view==="manage"&&h(ManageTab,{managers:managers,drivers:drivers,crews:crews,dayRates:dayRates,trucks:trucks,trailers:trailers,equipmentTypes:equipmentTypes,places:places,auditLog:auditLog,act:act,showToast:showToast}),
-      !isDispatch&&view==="myloads"&&h(MyLoads,{identity:identity,loads:loads,act:act,audit:audit}),
+      !isDispatch&&view==="myloads"&&h(MyLoads,{identity:identity,loads:loads,act:act,audit:audit,mutateLoad:mutateLoad}),
       !isDispatch&&view==="myschedule"&&h(MySchedule,{identity:identity,schedule:schedule,act:act})),
     toast&&h("div",{className:"fixed bottom-4 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-sm px-4 py-2 rounded-full shadow-lg z-50"},toast));
 }
@@ -1236,7 +1317,7 @@ function LocLine(props){
 
 // ---- MyLoads ----
 function MyLoads(props){
-  var identity=props.identity,loads=props.loads,act=props.act,audit=props.audit||function(){};
+  var identity=props.identity,loads=props.loads,act=props.act,audit=props.audit||function(){},mutateLoad=props.mutateLoad||function(id,patch){return act(function(){return db.updateLoad(id,patch);});};
   var s0=useState(null); var flagFor=s0[0]; var setFlagFor=s0[1];
   var s0b=useState(""); var flagNote=s0b[0]; var setFlagNote=s0b[1];
   var my=useMemo(function(){
@@ -1264,15 +1345,15 @@ function MyLoads(props){
   }
   function submitFlag(type){
     var l=flagFor; if(!l)return;
-    act(function(){return db.setProblem(l.id,type,flagNote.trim());},"Problem flagged — your manager is notified");
+    mutateLoad(l.id,{problem_type:type,problem_note:flagNote.trim()||null,problem_at:new Date().toISOString()},"Problem flagged — your manager is notified");
     audit("Flagged problem",type+(flagNote.trim()?" — "+flagNote.trim():""));
     setFlagFor(null);setFlagNote("");
   }
-  function clearFlag(l){act(function(){return db.clearProblem(l.id);},"Problem cleared");audit("Cleared problem",fmtShort(l.date));}
+  function clearFlag(l){mutateLoad(l.id,{problem_type:null,problem_note:null,problem_at:null},"Problem cleared");audit("Cleared problem",fmtShort(l.date));}
   function toggleCheck(l,itemId){
     var c=Object.assign({},l.checklist||{});
     if(c[itemId]&&c[itemId].done){delete c[itemId];}else{c[itemId]={done:true,at:Date.now()};}
-    act(function(){return db.updateLoad(l.id,{checklist:c});});
+    mutateLoad(l.id,{checklist:c});
   }
   var sUp=useState(""); var uploadingId=sUp[0]; var setUploadingId=sUp[1];
   function addPhoto(l,file){
@@ -1299,7 +1380,7 @@ function MyLoads(props){
       lh.push({status:ns,at:Date.now()});
       patch.status_history=lh;
     }
-    act(function(){return db.updateLoad(l.id,patch);});
+    mutateLoad(l.id,patch);
     audit("Move "+statusInfo(newStatus).l,fmtShort(l.date));
   }
   function reopenLoad(l){
@@ -1307,7 +1388,7 @@ function MyLoads(props){
       var hist=(m.statusHistory||[]).slice();hist.push({status:"loaded",at:Date.now()});
       return Object.assign({},m,{status:"loaded",statusHistory:hist,done:false,doneAt:null});
     });
-    act(function(){return db.updateLoad(l.id,{moves:moves,status:statusFromMoves(moves,l.status)});});
+    mutateLoad(l.id,{moves:moves,status:statusFromMoves(moves,l.status)});
     audit("Reopened load",fmtShort(l.date));
   }
   var STATUS_OPTS=[{v:"assigned",l:"Not Started"},{v:"inprogress",l:"In Progress"},{v:"completed",l:"Completed"}];
