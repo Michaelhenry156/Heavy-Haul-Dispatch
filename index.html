@@ -161,12 +161,17 @@ function monthKey(iso){return iso.slice(0,7);}
 function monthLabel(mk){var p=mk.split("-").map(Number);return new Date(p[0],p[1]-1,1).toLocaleDateString("en-US",{month:"long",year:"numeric"});}
 
 function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,7);}
-function blankMove(){return {id:uid(),pickupPad:"",pickupLease:"",pickupCoords:"",pickupPin:"",dropPad:"",dropLease:"",dropCoords:"",dropPin:"",notes:"",done:false,doneAt:null};}
+function blankMove(){return {id:uid(),pickupCrew:"",dropCrew:"",pickupPad:"",pickupLease:"",pickupCoords:"",pickupPin:"",dropPad:"",dropLease:"",dropCoords:"",dropPin:"",notes:"",status:"assigned",statusHistory:[],done:false,doneAt:null};}
 function getMoves(l){return Array.isArray(l.moves)&&l.moves.length?l.moves:[];}
+// Per-move status (falls back to legacy done flag for older moves)
+function moveStatus(m){return m.status||(m.done?"completed":"assigned");}
+function moveLastAt(m){var h=m.statusHistory||[];return h.length?h[h.length-1].at:(m.doneAt||0);}
+// Overall load status is derived from its moves: completed only when EVERY move is delivered.
 function statusFromMoves(moves,fb){
-  if(moves.length&&moves.every(function(m){return m.done;}))return "completed";
-  if(moves.some(function(m){return m.done;}))return "inprogress";
-  return fb==="completed"?"completed":"assigned";
+  if(!moves.length)return fb==="completed"?"completed":"assigned";
+  if(moves.every(function(m){return moveStatus(m)==="completed";}))return "completed";
+  if(moves.some(function(m){return moveStatus(m)!=="assigned";}))return "inprogress";
+  return "assigned";
 }
 function mapsHref(c){return (c&&c.trim())?"https://www.google.com/maps/search/?api=1&query="+encodeURIComponent(c.trim()):null;}
 function pinHref(v){if(!v||!v.trim())return null;var t=v.trim();return /^https?:\/\//i.test(t)?t:("https://www.google.com/maps/search/?api=1&query="+encodeURIComponent(t));}
@@ -581,7 +586,7 @@ function DispatchBoard(props){
       .filter(function(l){return !ql||(driverName(l.driverId)||"").toLowerCase().indexOf(ql)!==-1||(l.notes||"").toLowerCase().indexOf(ql)!==-1||(l.truck||"").toLowerCase().indexOf(ql)!==-1||(l.trailer||"").toLowerCase().indexOf(ql)!==-1;})
       .sort(function(a,b){return (a.createdAt||0)-(b.createdAt||0);});
   },[active,date,q,fStatus,fCrew,fYard]);
-  function byStatus(k){return dayLoads.filter(function(l){return statusCol(l.status||"assigned")===k;});}
+  function byStatus(k){return dayLoads.filter(function(l){return statusCol(statusFromMoves(getMoves(l),l.status))===k;});}
   function saveLoad(data){
     if(data.id){
       var id=data.id; var patch=Object.assign({},data); delete patch.id;
@@ -639,8 +644,8 @@ function DispatchBoard(props){
           h("div",{className:"text-xs font-bold text-slate-500 uppercase px-1 py-1"},c.label+" · "+byStatus(c.key).length),
           h("div",{className:"space-y-2"},
             byStatus(c.key).map(function(l){
-              var ms=getMoves(l); var dn=ms.filter(function(m){return m.done;}).length;
-              var si=statusInfo(l.status||"assigned"); var sAt=lastStatusAt(l);
+              var ms=getMoves(l); var dn=ms.filter(function(m){return moveStatus(m)==="completed";}).length;
+              var derived=statusFromMoves(ms,l.status); var si=statusInfo(derived); var sAt=lastStatusAt(l);
               return h("button",{key:l.id,onClick:function(){setEditing(l);},className:"w-full text-left border rounded-lg p-2 hover:border-teal-400 "+(l.problemType?"border-red-300 bg-red-50":"border-slate-200 bg-white")},
                 h("div",{className:"flex items-center justify-between gap-2"},
                   h("span",{className:"font-semibold text-sm text-slate-800 truncate"},driverName(l.driverId)),
@@ -658,7 +663,7 @@ function DispatchBoard(props){
                   h("span",{className:"font-semibold "+(c.key==="completed"?"text-green-600":c.key==="inprogress"?"text-amber-600":"text-slate-500")},si.l),
                   sAt&&(l.status&&l.status!=="assigned")?h("span",{className:"text-slate-400"},"· "+fmtClock(sAt)):null),
                 h("div",{className:"text-[11px] text-slate-400 mt-0.5 flex items-center justify-between"},
-                  h("span",null,ms.length+" move"+(ms.length!==1?"s":"")+(l.startTime?" · "+fmtTime(l.startTime):"")),
+                  h("span",null,dn+"/"+ms.length+" delivered"+(l.startTime?" · "+fmtTime(l.startTime):"")),
                   l.acknowledgedAt?h("span",{className:"text-green-600"},"✓ Seen "+fmtClock(l.acknowledgedAt)):(l.assignedBy&&l.assignedBy.name?h("span",null,"👤 "+l.assignedBy.name):null)));
             }),
             byStatus(c.key).length===0&&h("div",{className:"text-xs text-slate-300 px-1 py-3 text-center"},"None")));
@@ -757,12 +762,6 @@ function LoadModal(props){
           :h("select",{value:f.assignedById,onChange:function(e){set("assignedById",e.target.value);},className:"inp"},
               h("option",{value:""},"— select manager —"),
               managers.map(function(m){return h("option",{key:m.id,value:m.id},m.name);}))),
-      h(Field,{label:"Crew Name"},
-        crews.length===0
-          ?h("p",{className:"text-xs text-slate-400 border border-dashed border-slate-300 rounded-lg p-2"},"No crews yet — add them in the Manage tab.")
-          :h("select",{value:f.crewName,onChange:function(e){set("crewName",e.target.value);},className:"inp"},
-              h("option",{value:""},"— select crew —"),
-              crews.map(function(c){return h("option",{key:c,value:c},c);}))),
       h("div",{className:"grid grid-cols-2 gap-2"},
         h(Field,{label:"Truck"},
           trucks.length===0
@@ -776,6 +775,12 @@ function LoadModal(props){
             :h("select",{value:f.trailer,onChange:function(e){set("trailer",e.target.value);},className:"inp"},
                 h("option",{value:""},"— none —"),
                 trailers.map(function(c){return h("option",{key:c,value:c},c);})))),
+      h(Field,{label:"Crew Name (overall — optional)"},
+        crews.length===0
+          ?h("p",{className:"text-xs text-slate-400 border border-dashed border-slate-300 rounded-lg p-2"},"No crews yet — add them in the Manage tab.")
+          :h("select",{value:f.crewName,onChange:function(e){set("crewName",e.target.value);},className:"inp"},
+              h("option",{value:""},"— select crew —"),
+              crews.map(function(c){return h("option",{key:c,value:c},c);}))),
       conflicts.length>0?h("div",{className:"bg-amber-50 border border-amber-200 text-amber-800 rounded-lg p-2.5 text-xs space-y-0.5"},
         h("div",{className:"font-semibold"},"⚠ Possible double-booking:"),
         conflicts.map(function(c,i){return h("div",{key:i},c);})):null,
@@ -786,11 +791,19 @@ function LoadModal(props){
               h("span",{className:"text-xs font-bold text-teal-700"},"MOVE "+(i+1)),
               f.moves.length>1?h("button",{onClick:function(){rmMove(m.id);},className:"ml-auto text-red-500"},"🗑️"):null),
             h("div",{className:"space-y-2"},
+              crews.length>0?h(Field,{label:"Crew Name — Pickup"},
+                h("select",{value:m.pickupCrew||"",onChange:function(e){updMove(m.id,{pickupCrew:e.target.value});},className:"inp"},
+                  h("option",{value:""},"— select crew —"),
+                  crews.map(function(c){return h("option",{key:c,value:c},c);}))):null,
               h("div",{className:"font-bold text-sm text-slate-800"},"(Pickup Location)"),
               h(LRow,{label:"Location Name:"},h("input",{className:"inp",value:m.pickupPad,onChange:function(e){updMove(m.id,{pickupPad:e.target.value});}})),
               h(LRow,{label:"Lease Road Entrance:"},h("input",{className:"inp",value:m.pickupLease,onChange:function(e){updMove(m.id,{pickupLease:e.target.value});},placeholder:"Coordinates or pin drop link"})),
               h(LRow,{label:"Location:"},h("input",{className:"inp",value:m.pickupCoords,onChange:function(e){updMove(m.id,{pickupCoords:e.target.value});},placeholder:"Coordinates or pin drop link"}))),
             h("div",{className:"space-y-2"},
+              crews.length>0?h(Field,{label:"Crew Name — Drop-Off"},
+                h("select",{value:m.dropCrew||"",onChange:function(e){updMove(m.id,{dropCrew:e.target.value});},className:"inp"},
+                  h("option",{value:""},"— select crew —"),
+                  crews.map(function(c){return h("option",{key:c,value:c},c);}))):null,
               h("div",{className:"font-bold text-sm text-slate-800"},"(Drop-Off Location)"),
               h(LRow,{label:"Location Name:"},h("input",{className:"inp",value:m.dropPad,onChange:function(e){updMove(m.id,{dropPad:e.target.value});}})),
               h(LRow,{label:"Lease Road Entrance:"},h("input",{className:"inp",value:m.dropLease,onChange:function(e){updMove(m.id,{dropLease:e.target.value});},placeholder:"Coordinates or pin drop link"})),
@@ -913,7 +926,7 @@ function DayRate(props){
   var pLabel=isCustom?(fmtMDY(cLo)+" – "+fmtMDY(cHi)):(pDays===1?fmtMDY(navStart):(fmtMDY(navStart)+" – "+fmtMDY(addDays(navStart,pDays-1))));
   var pay=useMemo(function(){
     var byDriver={};
-    loads.forEach(function(l){if(!l.archived&&(l.status||"assigned")==="completed"){(byDriver[l.driverId]=byDriver[l.driverId]||{})[l.date]=true;}});
+    loads.forEach(function(l){if(!l.archived&&statusFromMoves(getMoves(l),l.status)==="completed"){(byDriver[l.driverId]=byDriver[l.driverId]||{})[l.date]=true;}});
     var detail=[];
     var rows=drivers.map(function(d){
       var dates=Object.keys(byDriver[d.id]||{}).filter(function(dt){return dt>=pStart&&dt<pEnd;}).sort();
@@ -1192,8 +1205,8 @@ function MyLoads(props){
     }catch(e){}
   },[my.length]);
   var newCount=my.filter(function(l){return !l.acknowledged&&(l.status||"assigned")!=="completed";}).length;
-  var active=my.filter(function(l){return (l.status||"assigned")!=="completed";}).sort(function(a,b){return a.date.localeCompare(b.date)||(a.createdAt||0)-(b.createdAt||0);});
-  var done=my.filter(function(l){return (l.status||"assigned")==="completed";}).sort(function(a,b){return b.date.localeCompare(a.date);});
+  var active=my.filter(function(l){return statusFromMoves(getMoves(l),l.status)!=="completed";}).sort(function(a,b){return a.date.localeCompare(b.date)||(a.createdAt||0)-(b.createdAt||0);});
+  var done=my.filter(function(l){return statusFromMoves(getMoves(l),l.status)==="completed";}).sort(function(a,b){return b.date.localeCompare(a.date);});
   function toggleMove(l,moveId){
     var moves=getMoves(l).map(function(m){return m.id===moveId?Object.assign({},m,{done:!m.done,doneAt:!m.done?Date.now():null}):m;});
     act(function(){return db.updateLoad(l.id,{moves:moves});});
@@ -1227,6 +1240,31 @@ function MyLoads(props){
     audit("Added photo",fmtShort(l.date));
   }
   function refreshAfterUpload(){return act(function(){return Promise.resolve();},"Photo added");}
+  function setMoveStatus(l,moveId,newStatus){
+    var moves=getMoves(l).map(function(m){
+      if(m.id!==moveId)return m;
+      var hist=(m.statusHistory||[]).slice();
+      hist.push({status:newStatus,at:Date.now()});
+      return Object.assign({},m,{status:newStatus,statusHistory:hist,done:newStatus==="completed",doneAt:newStatus==="completed"?Date.now():null});
+    });
+    var ns=statusFromMoves(moves,l.status);
+    var patch={moves:moves,status:ns};
+    if(ns!==(l.status||"assigned")){
+      var lh=(l.statusHistory||[]).slice();
+      lh.push({status:ns,at:Date.now()});
+      patch.status_history=lh;
+    }
+    act(function(){return db.updateLoad(l.id,patch);});
+    audit("Move "+statusInfo(newStatus).l,fmtShort(l.date));
+  }
+  function reopenLoad(l){
+    var moves=getMoves(l).map(function(m){
+      var hist=(m.statusHistory||[]).slice();hist.push({status:"loaded",at:Date.now()});
+      return Object.assign({},m,{status:"loaded",statusHistory:hist,done:false,doneAt:null});
+    });
+    act(function(){return db.updateLoad(l.id,{moves:moves,status:statusFromMoves(moves,l.status)});});
+    audit("Reopened load",fmtShort(l.date));
+  }
   var STATUS_OPTS=[{v:"assigned",l:"Not Started"},{v:"inprogress",l:"In Progress"},{v:"completed",l:"Completed"}];
   var n1=useState(("Notification"in window)?Notification.permission:"unsupported"); var notifPerm=n1[0]; var setNotifPerm=n1[1];
   function enableAlerts(){if(!("Notification"in window))return;Notification.requestPermission().then(function(p){setNotifPerm(p);if(p==="granted"){notify("Alerts are on ✅","You'll be notified here when a new load is assigned to you.");subscribeToPush(identity.driverId);}});}
@@ -1244,21 +1282,16 @@ function MyLoads(props){
     active.length===0?h(Empty,{msg:"Nothing assigned right now. You're all caught up."}):
     h("div",{className:"space-y-3"},
       active.map(function(l){
-        var ms=getMoves(l); var dn=ms.filter(function(m){return m.done;}).length;
+        var ms=getMoves(l); var dn=ms.filter(function(m){return moveStatus(m)==="completed";}).length;
+        var overall=statusFromMoves(ms,l.status);
         return h("div",{key:l.id,className:"bg-white rounded-xl p-3 shadow-sm"},
-          h("div",{className:"flex items-center justify-between gap-2 mb-1"},
+          h("div",{className:"flex items-center justify-between gap-2 mb-2"},
             h("span",{className:"text-xs font-semibold text-slate-600"},fmtShort(l.date)),
-            h("div",{className:"flex items-center gap-2"},h(MoveChip,{id:l.moveType,big:true}),h("span",{className:"text-xs text-slate-500"},dn+"/"+ms.length+" done"))),
-          h("div",{className:"mb-2"},
-            h("div",{className:"text-xs font-medium text-slate-500 mb-1"},"Tap your current stage:"),
-            h("div",{className:"flex flex-wrap gap-1"},
-              STATUS_FLOW.map(function(st){
-                var active=(l.status||"assigned")===st.v;
-                return h("button",{key:st.v,onClick:function(){setStatus(l,st.v);},
-                  className:"text-xs px-2.5 py-1.5 rounded-lg font-semibold "+(active?(st.v==="completed"?"bg-green-600 text-white":"bg-teal-600 text-white"):"bg-slate-100 text-slate-600")},st.l);
-              }))),
-          (l.statusHistory&&l.statusHistory.length)?h("div",{className:"text-[11px] text-slate-400 mb-2 flex flex-wrap gap-x-2"},
-            l.statusHistory.map(function(s,i){return h("span",{key:i},statusInfo(s.status).l+" "+fmtClock(s.at));})):null,
+            h("div",{className:"flex items-center gap-2"},h(MoveChip,{id:l.moveType,big:true}),h("span",{className:"text-xs text-slate-500"},dn+"/"+ms.length+" delivered"))),
+          h("div",{className:"text-[11px] mb-2 flex items-center gap-1.5 flex-wrap"},
+            h("span",{className:"text-slate-500 font-medium"},"Overall:"),
+            h("span",{className:"font-bold "+(overall==="completed"?"text-green-600":overall==="inprogress"?"text-amber-600":"text-slate-500")},statusInfo(overall).l),
+            h("span",{className:"text-slate-400"},"· update each move below")),
           (l.truck||l.trailer)?h("div",{className:"text-[11px] text-slate-600 mb-2 font-medium"},"🚚 "+[l.truck,l.trailer].filter(Boolean).join(" · ")):null,
           l.permitUrl?h("a",{href:l.permitUrl,target:"_blank",rel:"noreferrer",className:"block bg-amber-50 border border-amber-200 text-amber-800 rounded-lg px-2.5 py-2 mb-2 text-sm font-semibold"},"📄 Open permit"+(l.permitName?" — "+l.permitName:"")):null,
           (l.startTime||l.startFrom)?h("div",{className:"text-sm font-semibold text-slate-800 bg-teal-50 border border-teal-100 rounded-lg px-2.5 py-1.5 mb-2"},
@@ -1277,15 +1310,23 @@ function MyLoads(props){
           :h("button",{onClick:function(){setFlagFor(l);setFlagNote("");},className:"w-full text-xs text-red-600 border border-red-200 rounded-lg py-1.5 font-medium mb-2"},"⚠ Flag a problem"),
           h("div",{className:"space-y-2"},
             ms.map(function(m,i){
-              return h("div",{key:m.id,className:"rounded-lg border p-2.5 "+(m.done?"bg-green-50 border-green-200":"bg-white border-slate-200")},
-                h("div",{className:"flex items-start gap-2.5"},
-                  h("button",{onClick:function(){toggleMove(l,m.id);},className:"mt-0.5 w-6 h-6 rounded-md border-2 flex items-center justify-center shrink-0 "+(m.done?"bg-green-600 border-green-600 text-white":"border-slate-300")},m.done?"✓":""),
-                  h("div",{className:"flex-1 min-w-0"},
-                    h("div",{className:"text-[10px] font-bold text-teal-700 mb-1"},"MOVE "+(i+1)+(m.done?" · DONE":"")),
-                    h(LocLine,{label:"Pickup",pad:m.pickupPad,lease:m.pickupLease,coords:m.pickupCoords,pin:m.pickupPin}),
-                    h("div",{className:"border-l-2 border-slate-200 h-2 ml-1 my-1"}),
-                    h(LocLine,{label:"Drop-Off",pad:m.dropPad,lease:m.dropLease,coords:m.dropCoords,pin:m.dropPin}),
-                    m.notes?h("div",{className:"text-xs text-slate-500 mt-1 bg-slate-50 rounded p-1.5"},m.notes):null)));
+              var msv=moveStatus(m);
+              return h("div",{key:m.id,className:"rounded-lg border p-2.5 "+(msv==="completed"?"bg-green-50 border-green-200":"bg-white border-slate-200")},
+                h("div",{className:"text-[10px] font-bold text-teal-700 mb-1"},"MOVE "+(i+1)),
+                h("div",{className:"flex flex-wrap gap-1 mb-1.5"},
+                  STATUS_FLOW.map(function(st){
+                    var on=msv===st.v;
+                    return h("button",{key:st.v,onClick:function(){setMoveStatus(l,m.id,st.v);},
+                      className:"text-[11px] px-2 py-1 rounded-md font-semibold "+(on?(st.v==="completed"?"bg-green-600 text-white":"bg-teal-600 text-white"):"bg-slate-100 text-slate-600")},st.l);
+                  })),
+                (m.statusHistory&&m.statusHistory.length)?h("div",{className:"text-[10px] text-slate-400 mb-1.5 flex flex-wrap gap-x-2"},
+                  m.statusHistory.map(function(s,k){return h("span",{key:k},statusInfo(s.status).l+" "+fmtClock(s.at));})):null,
+                m.pickupCrew?h("div",{className:"text-[11px] text-slate-500 font-medium"},"👷 Pickup crew: "+m.pickupCrew):null,
+                h(LocLine,{label:"Pickup",pad:m.pickupPad,lease:m.pickupLease,coords:m.pickupCoords,pin:m.pickupPin}),
+                h("div",{className:"border-l-2 border-slate-200 h-2 ml-1 my-1"}),
+                m.dropCrew?h("div",{className:"text-[11px] text-slate-500 font-medium"},"👷 Drop-off crew: "+m.dropCrew):null,
+                h(LocLine,{label:"Drop-Off",pad:m.dropPad,lease:m.dropLease,coords:m.dropCoords,pin:m.dropPin}),
+                m.notes?h("div",{className:"text-xs text-slate-500 mt-1 bg-slate-50 rounded p-1.5"},m.notes):null);
             })),
           h("div",{className:"mt-3 border-t border-slate-100 pt-2"},
             h("div",{className:"text-xs font-bold text-slate-600 mb-1.5"},"Pre-trip checklist"),
@@ -1315,7 +1356,7 @@ function MyLoads(props){
           return h("div",{key:l.id,className:"bg-white/70 rounded-lg p-2.5 shadow-sm flex items-center gap-2 text-sm"},
             "✅",h("span",{className:"text-slate-500"},fmtShort(l.date)),h(MoveChip,{id:l.moveType}),
             h("span",{className:"text-slate-600 truncate"},ms.length+" move"+(ms.length!==1?"s":"")),
-            h("button",{onClick:function(){setStatus(l,"loaded");},className:"ml-auto text-[11px] text-teal-700 font-medium shrink-0"},"↩ Reopen"));
+            h("button",{onClick:function(){reopenLoad(l);},className:"ml-auto text-[11px] text-teal-700 font-medium shrink-0"},"↩ Reopen"));
         }))):null,
     flagFor&&h(Modal,{title:"Flag a problem",onClose:function(){setFlagFor(null);}},
       h("div",{className:"space-y-3"},
