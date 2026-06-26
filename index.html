@@ -121,6 +121,9 @@ var STATUS_FLOW=[
   {v:"completed",l:"Delivered"}
 ];
 function statusInfo(v){return STATUS_FLOW.find(function(s){return s.v===v;})||{v:v||"assigned",l:(v==="inprogress"?"In Progress":"Not Started")};}
+function nextStage(v){var i=STATUS_FLOW.findIndex(function(s){return s.v===(v||"assigned");});return (i>=0&&i<STATUS_FLOW.length-1)?STATUS_FLOW[i+1]:null;}
+function stageIcon(v){return ({assigned:"▶",enroute:"🚚",arrived:"📍",loaded:"⬆",completed:"🏁"})[v]||"•";}
+function stageShort(v){return ({assigned:"Start",enroute:"En route",arrived:"Arrived",loaded:"Loaded",completed:"Done"})[v]||v;}
 function statusCol(v){if(v==="completed")return "completed";if(!v||v==="assigned")return "assigned";return "inprogress";}
 function fmtClock(ms){return ms?new Date(ms).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"}):"";}
 function lastStatusAt(l){var h=l.statusHistory||[];return h.length?h[h.length-1].at:0;}
@@ -385,6 +388,25 @@ function applyOutbox(loads){
 function MoveChip(props){
   var m=mt(props.id); if(!m)return null;
   return h("span",{className:"inline-block rounded font-semibold "+(props.big?"text-xs px-2 py-1":"text-[10px] px-1.5 py-0.5")+" "+m.chip},props.big?m.label:m.abbr);
+}
+function StatusRail(props){
+  var idx=STATUS_FLOW.findIndex(function(s){return s.v===(props.status||"assigned");}); if(idx<0)idx=0;
+  return h("div",{className:"flex items-center pb-5 pt-1"},
+    STATUS_FLOW.map(function(st,i){
+      var done=i<idx, cur=i===idx;
+      var node=h("button",{onClick:function(){props.onSet&&props.onSet(st.v);},"aria-label":st.l,
+        className:"relative grid place-items-center rounded-full shrink-0 "+
+          (cur?"w-9 h-9 bg-amber-500 text-white ring-4 ring-amber-200":
+           done?"w-7 h-7 bg-teal-600 text-white":
+           "w-7 h-7 bg-white border-2 border-slate-300")},
+        done?h("span",{className:"text-sm font-bold"},"✓"):
+        cur?h("span",{className:"text-sm leading-none"},stageIcon(st.v)):
+        h("span",{className:"w-1.5 h-1.5 rounded-full bg-slate-300"}),
+        h("span",{className:"absolute top-full mt-1 left-1/2 -translate-x-1/2 whitespace-nowrap text-[9px] font-semibold "+(cur?"text-amber-700":done?"text-teal-700":"text-slate-400")},stageShort(st.v)));
+      return i===STATUS_FLOW.length-1
+        ? h(Fragment,{key:st.v},node)
+        : h(Fragment,{key:st.v},node,h("div",{className:"flex-1 h-1 mx-1 rounded "+(i<idx?"bg-teal-500":"bg-slate-200")}));
+    }));
 }
 function Legend(){
   return h("div",{className:"flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-slate-600"},
@@ -773,26 +795,27 @@ function DispatchBoard(props){
               var ms=getMoves(l); var dn=ms.filter(function(m){return moveStatus(m)==="completed";}).length;
               var derived=statusFromMoves(ms,l.status); var si=statusInfo(derived); var sAt=lastStatusAt(l);
               var eqList=ms.map(function(m){return m.equipmentType;}).filter(function(v,i,a){return v&&a.indexOf(v)===i;});
-              return h("button",{key:l.id,onClick:function(){setEditing(l);},className:"w-full text-left border rounded-lg p-2 hover:border-teal-400 "+(l.problemType?"border-red-300 bg-red-50":"border-slate-200 bg-white")},
-                h("div",{className:"flex items-center justify-between gap-2"},
-                  h("span",{className:"font-semibold text-sm text-slate-800 truncate"},driverName(l.driverId)),
+              var spineHex=l.problemType?"#ef4444":derived==="completed"?"#22c55e":derived==="inprogress"?"#f59e0b":"#cbd5e1";
+              return h("button",{key:l.id,onClick:function(){setEditing(l);},
+                style:{borderLeftWidth:"4px",borderLeftColor:spineHex},
+                className:"w-full text-left border rounded-lg p-2.5 hover:border-teal-400 "+(l.problemType?"border-red-200 bg-red-50":"border-slate-200 bg-white")},
+                h("div",{className:"flex items-center gap-2"},
+                  h("span",{className:"font-semibold text-sm text-slate-800 truncate flex-1"},driverName(l.driverId)),
+                  h("span",{className:"text-[10px] font-bold px-1.5 py-0.5 rounded-full "+(derived==="completed"?"bg-green-100 text-green-700":derived==="inprogress"?"bg-amber-100 text-amber-700":"bg-slate-100 text-slate-600")},si.l),
                   h(MoveChip,{id:l.moveType})),
-                l.problemType?h("div",{className:"text-[11px] text-red-700 font-semibold mt-0.5"},"⚠ "+l.problemType+(l.problemNote?" — "+l.problemNote:"")):null,
-                h("div",{className:"text-xs text-slate-500 flex items-center gap-1 mt-1"},"📍 ",
+                l.problemType?h("div",{className:"text-[11px] text-red-700 font-semibold mt-1"},"⚠ "+l.problemType+(l.problemNote?" — "+l.problemNote:"")):null,
+                h("div",{className:"text-xs text-slate-600 flex items-center gap-1 mt-1"},"📍 ",
                   h("span",{className:"truncate"},(ms[0]?ms[0].pickupPad||"—":"—")+" → "+(ms[ms.length-1]?ms[ms.length-1].dropPad||"—":"—"))),
-                (l.truck||l.trailer)?h("div",{className:"text-[11px] text-slate-500 mt-0.5"},"🚚 "+[l.truck,l.trailer].filter(Boolean).join(" · ")):null,
-                eqList.length>0?h("div",{className:"text-[11px] text-slate-500 mt-0.5 truncate"},"📦 "+eqList.join(", ")):null,
-                l.crewName?h("div",{className:"text-[11px] text-slate-500 mt-0.5"},"👷 "+l.crewName):null,
-                (l.permitUrl||(l.photos&&l.photos.length)||checklistDone(l.checklist)>0)?h("div",{className:"text-[11px] text-slate-500 mt-0.5 flex flex-wrap gap-x-2"},
+                h("div",{className:"text-[11px] text-slate-500 mt-1 flex flex-wrap gap-x-2 gap-y-0.5"},
+                  (l.truck||l.trailer)?h("span",null,"🚚 "+[l.truck,l.trailer].filter(Boolean).join(" · ")):null,
+                  eqList.length>0?h("span",{className:"truncate"},"📦 "+eqList.join(", ")):null,
+                  l.crewName?h("span",null,"👷 "+l.crewName):null,
                   l.permitUrl?h("span",null,"📄 Permit"):null,
                   (l.photos&&l.photos.length)?h("span",null,"📷 "+l.photos.length):null,
-                  checklistDone(l.checklist)>0?h("span",null,"✓ Pre-trip "+checklistDone(l.checklist)+"/"+CHECKLIST_ITEMS.length):null):null,
-                h("div",{className:"text-[11px] mt-1 flex items-center gap-1"},
-                  h("span",{className:"font-semibold "+(c.key==="completed"?"text-green-600":c.key==="inprogress"?"text-amber-600":"text-slate-500")},si.l),
-                  sAt&&(l.status&&l.status!=="assigned")?h("span",{className:"text-slate-400"},"· "+fmtClock(sAt)):null),
-                h("div",{className:"text-[11px] text-slate-400 mt-0.5 flex items-center justify-between"},
-                  h("span",null,dn+"/"+ms.length+" delivered"+(l.startTime?" · "+fmtTime(l.startTime):"")),
-                  l.acknowledgedAt?h("span",{className:"text-green-600"},"✓ Seen "+fmtClock(l.acknowledgedAt)):(l.assignedBy&&l.assignedBy.name?h("span",null,"👤 "+l.assignedBy.name):null)));
+                  checklistDone(l.checklist)>0?h("span",null,"✓ "+checklistDone(l.checklist)+"/"+CHECKLIST_ITEMS.length):null),
+                h("div",{className:"text-[11px] text-slate-400 mt-1 flex items-center justify-between gap-2"},
+                  h("span",{className:"truncate"},dn+"/"+ms.length+" delivered"+(sAt&&l.status&&l.status!=="assigned"?" · "+fmtClock(sAt):"")+(l.startTime?" · "+fmtTime(l.startTime):"")),
+                  l.acknowledgedAt?h("span",{className:"text-green-600 shrink-0"},"✓ Seen "+fmtClock(l.acknowledgedAt)):(l.assignedBy&&l.assignedBy.name?h("span",{className:"shrink-0"},"👤 "+l.assignedBy.name):null)));
             }),
             byStatus(c.key).length===0&&h("div",{className:"text-xs text-slate-300 px-1 py-3 text-center"},"None")));
       })),
@@ -1486,26 +1509,39 @@ function MyLoads(props){
           h("div",{className:"space-y-2"},
             ms.map(function(m,i){
               var msv=moveStatus(m);
-              return h("div",{key:m.id,className:"rounded-lg border p-2.5 "+(msv==="completed"?"bg-green-50 border-green-200":"bg-white border-slate-200")},
-                h("div",{className:"text-[10px] font-bold text-teal-700 mb-1"},"MOVE "+(i+1)),
-                (m.equipmentType||m.unitNumber)?h("div",{className:"text-xs font-semibold text-slate-700 mb-1"},"📦 "+[m.equipmentType,(m.unitNumber?"Unit "+m.unitNumber:"")].filter(Boolean).join(" · ")):null,
-                h("div",{className:"flex flex-wrap gap-1 mb-1.5"},
-                  STATUS_FLOW.map(function(st){
-                    var on=msv===st.v;
-                    return h("button",{key:st.v,onClick:function(){setMoveStatus(l,m.id,st.v);},
-                      className:"text-[11px] px-2 py-1 rounded-md font-semibold "+(on?(st.v==="completed"?"bg-green-600 text-white":"bg-teal-600 text-white"):"bg-slate-100 text-slate-600")},st.l);
-                  })),
-                (m.statusHistory&&m.statusHistory.length)?h("div",{className:"text-[10px] text-slate-400 mb-1.5 flex flex-wrap gap-x-2"},
-                  m.statusHistory.map(function(s,k){return h("span",{key:k},statusInfo(s.status).l+" "+fmtClock(s.at));})):null,
-                m.pickupCrew?h("div",{className:"text-[11px] text-slate-500 font-medium"},"👷 Pickup crew: "+m.pickupCrew):null,
-                h(LocLine,{label:"Pickup",pad:m.pickupPad,lease:m.pickupLease,coords:m.pickupCoords,pin:m.pickupPin}),
-                h("div",{className:"border-l-2 border-slate-200 h-2 ml-1 my-1"}),
-                m.dropCrew?h("div",{className:"text-[11px] text-slate-500 font-medium"},"👷 Drop-off crew: "+m.dropCrew):null,
-                h(LocLine,{label:"Drop-Off",pad:m.dropPad,lease:m.dropLease,coords:m.dropCoords,pin:m.dropPin}),
-                m.notes?h("div",{className:"text-xs text-slate-500 mt-1 bg-slate-50 rounded p-1.5"},m.notes):null);
+              var nx=nextStage(msv);
+              var lastAt=(m.statusHistory&&m.statusHistory.length)?m.statusHistory[m.statusHistory.length-1].at:0;
+              return h("div",{key:m.id,className:"rounded-xl border p-3 "+(msv==="completed"?"bg-green-50 border-green-200":"bg-white border-slate-200")},
+                h("div",{className:"flex items-center gap-2 mb-2"},
+                  h("span",{className:"text-[10px] font-bold text-teal-700 bg-teal-50 rounded-full px-2 py-0.5"},ms.length>1?"Move "+(i+1)+" of "+ms.length:"Move"),
+                  msv==="completed"?h("span",{className:"text-[10px] font-bold text-green-700 bg-green-100 rounded-full px-2 py-0.5"},"✓ Delivered"):null),
+                ((m.equipmentType||m.unitNumber)||m.pickupCrew||m.dropCrew)?h("div",{className:"flex flex-wrap gap-1.5 mb-2"},
+                  m.equipmentType?h("span",{className:"inline-flex items-center gap-1 text-[11px] font-medium text-slate-600 bg-slate-100 rounded-full px-2 py-0.5"},"📦 "+m.equipmentType):null,
+                  m.unitNumber?h("span",{className:"inline-flex items-center gap-1 text-[11px] font-medium text-slate-600 bg-slate-100 rounded-full px-2 py-0.5"},"# "+m.unitNumber):null):null,
+                h(StatusRail,{status:msv,onSet:function(v){setMoveStatus(l,m.id,v);}}),
+                h("div",{className:"flex items-center gap-2 mb-2"},
+                  h("span",{className:"text-[11px] text-slate-400 font-medium"},"Step "+(STATUS_FLOW.findIndex(function(s){return s.v===msv;})+1)+" of "+STATUS_FLOW.length),
+                  h("span",{className:"text-sm font-bold "+(msv==="completed"?"text-green-700":msv==="assigned"?"text-slate-600":"text-amber-600")},statusInfo(msv).l),
+                  lastAt?h("span",{className:"text-[11px] text-slate-400 ml-auto"},"🕑 "+fmtClock(lastAt)):null),
+                nx?h("button",{onClick:function(){setMoveStatus(l,m.id,nx.v);},
+                  className:"w-full flex items-center justify-center gap-2 bg-teal-600 hover:bg-teal-500 text-white rounded-xl py-3 text-sm font-bold mb-1"},
+                  "Advance to "+nx.l+" →")
+                :h("button",{onClick:function(){setMoveStatus(l,m.id,"loaded");},
+                  className:"w-full text-center text-[11px] text-slate-500 font-medium py-1.5 mb-1"},"↩ Move delivered — tap to undo"),
+                h("div",{className:"mt-2 space-y-1"},
+                  m.pickupCrew?h("div",{className:"text-[11px]"},h("span",{className:"inline-flex items-center gap-1 text-teal-800 bg-teal-50 rounded-full px-2 py-0.5 font-medium"},"👷 Pickup crew: "+m.pickupCrew)):null,
+                  h(LocLine,{label:"Pickup",pad:m.pickupPad,lease:m.pickupLease,coords:m.pickupCoords,pin:m.pickupPin}),
+                  h("div",{className:"flex justify-center text-slate-300 text-xs"},"▼"),
+                  m.dropCrew?h("div",{className:"text-[11px]"},h("span",{className:"inline-flex items-center gap-1 text-teal-800 bg-teal-50 rounded-full px-2 py-0.5 font-medium"},"👷 Drop-off crew: "+m.dropCrew)):null,
+                  h(LocLine,{label:"Drop-Off",pad:m.dropPad,lease:m.dropLease,coords:m.dropCoords,pin:m.dropPin})),
+                m.notes?h("div",{className:"text-xs text-slate-500 mt-2 bg-slate-50 rounded-lg p-2"},m.notes):null);
             })),
           h("div",{className:"mt-3 border-t border-slate-100 pt-2"},
-            h("div",{className:"text-xs font-bold text-slate-600 mb-1.5"},"Pre-trip checklist"),
+            h("div",{className:"flex items-center gap-2 mb-1.5"},
+              h("div",{className:"text-xs font-bold text-slate-600"},"Pre-trip checklist"),
+              h("div",{className:"text-[11px] font-semibold text-slate-400 ml-auto tnum"},checklistDone(l.checklist)+" of "+CHECKLIST_ITEMS.length)),
+            h("div",{className:"h-1.5 bg-slate-100 rounded-full overflow-hidden mb-2"},
+              h("div",{className:"h-full rounded-full "+(checklistDone(l.checklist)===CHECKLIST_ITEMS.length?"bg-green-500":"bg-teal-500"),style:{width:Math.round(checklistDone(l.checklist)/CHECKLIST_ITEMS.length*100)+"%"}})),
             h("div",{className:"space-y-1"},
               CHECKLIST_ITEMS.map(function(it){
                 var on=l.checklist&&l.checklist[it.id]&&l.checklist[it.id].done;
