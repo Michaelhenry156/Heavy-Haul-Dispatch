@@ -161,7 +161,7 @@ function monthKey(iso){return iso.slice(0,7);}
 function monthLabel(mk){var p=mk.split("-").map(Number);return new Date(p[0],p[1]-1,1).toLocaleDateString("en-US",{month:"long",year:"numeric"});}
 
 function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,7);}
-function blankMove(){return {id:uid(),pickupCrew:"",dropCrew:"",pickupPad:"",pickupLease:"",pickupCoords:"",pickupPin:"",dropPad:"",dropLease:"",dropCoords:"",dropPin:"",notes:"",status:"assigned",statusHistory:[],done:false,doneAt:null};}
+function blankMove(){return {id:uid(),equipmentType:"",unitNumber:"",pickupCrew:"",dropCrew:"",pickupPad:"",pickupLease:"",pickupCoords:"",pickupPin:"",dropPad:"",dropLease:"",dropCoords:"",dropPin:"",notes:"",status:"assigned",statusHistory:[],done:false,doneAt:null};}
 function getMoves(l){return Array.isArray(l.moves)&&l.moves.length?l.moves:[];}
 // Per-move status (falls back to legacy done flag for older moves)
 function moveStatus(m){return m.status||(m.done?"completed":"assigned");}
@@ -242,18 +242,20 @@ var db = {
     if(res[3].error) throw new Error("loads: "+res[3].error.message);
     var schedule={};
     (res[2].data||[]).forEach(function(r){schedule[r.driver_id+"|"+r.work_date]={moveType:r.move_type};});
-    var passwords={};var crews=[];var dayRates=[];var trucks=[];var trailers=[];
+    var passwords={};var crews=[];var dayRates=[];var trucks=[];var trailers=[];var equipmentTypes=[];var places=[];
     (res[4].data||[]).forEach(function(r){
       if(r.key&&r.key.indexOf("pw:")===0)passwords[r.key]=r.value;
       if(r.key==="crews"){try{crews=JSON.parse(r.value)||[];}catch(e){crews=[];}}
       if(r.key==="dayrate_history"){try{dayRates=JSON.parse(r.value)||[];}catch(e){dayRates=[];}}
       if(r.key==="trucks"){try{trucks=JSON.parse(r.value)||[];}catch(e){trucks=[];}}
       if(r.key==="trailers"){try{trailers=JSON.parse(r.value)||[];}catch(e){trailers=[];}}
+      if(r.key==="equipment_types"){try{equipmentTypes=JSON.parse(r.value)||[];}catch(e){equipmentTypes=[];}}
+      if(r.key==="places"){try{places=JSON.parse(r.value)||[];}catch(e){places=[];}}
     });
     dayRates.sort(function(a,b){return (a.from||"").localeCompare(b.from||"");});
     return {
       drivers:res[0].data||[], managers:res[1].data||[],
-      schedule:schedule, loads:(res[3].data||[]).map(rowToLoad), passwords:passwords, crews:crews, dayRates:dayRates, trucks:trucks, trailers:trailers,
+      schedule:schedule, loads:(res[3].data||[]).map(rowToLoad), passwords:passwords, crews:crews, dayRates:dayRates, trucks:trucks, trailers:trailers, equipmentTypes:equipmentTypes, places:places,
       auditLog:(res[5]&&res[5].data)||[]
     };
   },
@@ -287,6 +289,8 @@ var db = {
   setCrews:     function(arr){return sb.from("settings").upsert({key:"crews",value:JSON.stringify(arr)});},
   setTrucks:    function(arr){return sb.from("settings").upsert({key:"trucks",value:JSON.stringify(arr)});},
   setTrailers:  function(arr){return sb.from("settings").upsert({key:"trailers",value:JSON.stringify(arr)});},
+  setEquipmentTypes: function(arr){return sb.from("settings").upsert({key:"equipment_types",value:JSON.stringify(arr)});},
+  setPlaces:    function(arr){return sb.from("settings").upsert({key:"places",value:JSON.stringify(arr)});},
   savePushSub:  function(driverId,endpoint,p256dh,auth){return sb.from("push_subscriptions").upsert({driver_id:driverId,endpoint:endpoint,p256dh:p256dh,auth:auth},{onConflict:"endpoint"});},
   notifyDriver: function(payload){
     function go(){return sb.functions.invoke("notify-driver",{body:payload}).then(function(r){if(r&&r.error)throw r.error;return r;});}
@@ -452,6 +456,8 @@ function App(){
   var s14=useState([]); var trucks=s14[0]; var setTrucks=s14[1];
   var s15=useState([]); var trailers=s15[0]; var setTrailers=s15[1];
   var s16=useState([]); var auditLog=s16[0]; var setAuditLog=s16[1];
+  var s17=useState([]); var equipmentTypes=s17[0]; var setEquipmentTypes=s17[1];
+  var s18=useState([]); var places=s18[0]; var setPlaces=s18[1];
 
   function showToast(m){setToast(m);setTimeout(function(){setToast("");},1800);}
 
@@ -461,7 +467,7 @@ function App(){
       var d=await db.fetchAll();
       setDrivers(d.drivers); setManagers(d.managers);
       setSchedule(d.schedule); setLoads(d.loads);
-      setPasswords(d.passwords); setCrews(d.crews||[]); setDayRates(d.dayRates||[]); setTrucks(d.trucks||[]); setTrailers(d.trailers||[]); setAuditLog(d.auditLog||[]); setDbError("");
+      setPasswords(d.passwords); setCrews(d.crews||[]); setDayRates(d.dayRates||[]); setTrucks(d.trucks||[]); setTrailers(d.trailers||[]); setAuditLog(d.auditLog||[]); setEquipmentTypes(d.equipmentTypes||[]); setPlaces(d.places||[]); setDbError("");
     }catch(e){
       console.error(e);
       setDbError(e&&e.message?e.message:String(e));
@@ -552,11 +558,11 @@ function App(){
           h(Tab,{a:view==="myloads",on:function(){setView("myloads");},ic:"📋",l:"My Loads"}),
           h(Tab,{a:view==="myschedule",on:function(){setView("myschedule");},ic:"📅",l:"My Schedule"})))),
     h("main",{className:"max-w-6xl mx-auto p-3"},
-      isDispatch&&view==="dispatch"&&h(DispatchBoard,{drivers:drivers,loads:loads,schedule:schedule,managers:managers,crews:crews,trucks:trucks,trailers:trailers,driverName:driverName,act:act,audit:audit}),
+      isDispatch&&view==="dispatch"&&h(DispatchBoard,{drivers:drivers,loads:loads,schedule:schedule,managers:managers,crews:crews,trucks:trucks,trailers:trailers,equipmentTypes:equipmentTypes,places:places,driverName:driverName,act:act,audit:audit}),
       isDispatch&&view==="schedule"&&h(ScheduleBoard,{drivers:drivers,schedule:schedule,act:act}),
       isDispatch&&view==="dayrate"&&h(DayRate,{drivers:drivers,schedule:schedule,loads:loads,dayRates:dayRates,showToast:showToast}),
       isDispatch&&view==="drivers"&&h(DriversTab,{drivers:drivers,act:act}),
-      isDispatch&&view==="manage"&&h(ManageTab,{managers:managers,drivers:drivers,crews:crews,dayRates:dayRates,trucks:trucks,trailers:trailers,auditLog:auditLog,act:act,showToast:showToast}),
+      isDispatch&&view==="manage"&&h(ManageTab,{managers:managers,drivers:drivers,crews:crews,dayRates:dayRates,trucks:trucks,trailers:trailers,equipmentTypes:equipmentTypes,places:places,auditLog:auditLog,act:act,showToast:showToast}),
       !isDispatch&&view==="myloads"&&h(MyLoads,{identity:identity,loads:loads,act:act,audit:audit}),
       !isDispatch&&view==="myschedule"&&h(MySchedule,{identity:identity,schedule:schedule,act:act})),
     toast&&h("div",{className:"fixed bottom-4 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-sm px-4 py-2 rounded-full shadow-lg z-50"},toast));
@@ -564,7 +570,7 @@ function App(){
 
 // ---- DispatchBoard ----
 function DispatchBoard(props){
-  var drivers=props.drivers,loads=props.loads,schedule=props.schedule,managers=props.managers,crews=props.crews,trucks=props.trucks,trailers=props.trailers,driverName=props.driverName,act=props.act,audit=props.audit||function(){};
+  var drivers=props.drivers,loads=props.loads,schedule=props.schedule,managers=props.managers,crews=props.crews,trucks=props.trucks,trailers=props.trailers,equipmentTypes=props.equipmentTypes,places=props.places,driverName=props.driverName,act=props.act,audit=props.audit||function(){};
   var s1=useState(todayISO()); var date=s1[0]; var setDate=s1[1];
   var s2=useState(null); var editing=s2[0]; var setEditing=s2[1];
   var s3=useState(""); var q=s3[0]; var setQ=s3[1];
@@ -646,6 +652,7 @@ function DispatchBoard(props){
             byStatus(c.key).map(function(l){
               var ms=getMoves(l); var dn=ms.filter(function(m){return moveStatus(m)==="completed";}).length;
               var derived=statusFromMoves(ms,l.status); var si=statusInfo(derived); var sAt=lastStatusAt(l);
+              var eqList=ms.map(function(m){return m.equipmentType;}).filter(function(v,i,a){return v&&a.indexOf(v)===i;});
               return h("button",{key:l.id,onClick:function(){setEditing(l);},className:"w-full text-left border rounded-lg p-2 hover:border-teal-400 "+(l.problemType?"border-red-300 bg-red-50":"border-slate-200 bg-white")},
                 h("div",{className:"flex items-center justify-between gap-2"},
                   h("span",{className:"font-semibold text-sm text-slate-800 truncate"},driverName(l.driverId)),
@@ -654,6 +661,7 @@ function DispatchBoard(props){
                 h("div",{className:"text-xs text-slate-500 flex items-center gap-1 mt-1"},"📍 ",
                   h("span",{className:"truncate"},(ms[0]?ms[0].pickupPad||"—":"—")+" → "+(ms[ms.length-1]?ms[ms.length-1].dropPad||"—":"—"))),
                 (l.truck||l.trailer)?h("div",{className:"text-[11px] text-slate-500 mt-0.5"},"🚚 "+[l.truck,l.trailer].filter(Boolean).join(" · ")):null,
+                eqList.length>0?h("div",{className:"text-[11px] text-slate-500 mt-0.5 truncate"},"📦 "+eqList.join(", ")):null,
                 l.crewName?h("div",{className:"text-[11px] text-slate-500 mt-0.5"},"👷 "+l.crewName):null,
                 (l.permitUrl||(l.photos&&l.photos.length)||checklistDone(l.checklist)>0)?h("div",{className:"text-[11px] text-slate-500 mt-0.5 flex flex-wrap gap-x-2"},
                   l.permitUrl?h("span",null,"📄 Permit"):null,
@@ -679,12 +687,12 @@ function DispatchBoard(props){
           h("button",{onClick:function(){restore(l);},className:"text-xs bg-teal-50 text-teal-700 border border-teal-200 rounded-lg px-2.5 py-1.5 font-medium shrink-0"},"Restore"),
           h("button",{onClick:function(){hardDelete(l);},className:"text-xs text-red-500 shrink-0 px-1"},"Delete"));
       }))),
-    editing&&h(LoadModal,{drivers:drivers,schedule:schedule,managers:managers,crews:crews,trucks:trucks,trailers:trailers,allLoads:active,load:editing,onSave:saveLoad,onDelete:delLoad,onHardDelete:delForever,onClose:function(){setEditing(null);}}));
+    editing&&h(LoadModal,{drivers:drivers,schedule:schedule,managers:managers,crews:crews,trucks:trucks,trailers:trailers,equipmentTypes:equipmentTypes,places:places,allLoads:active,load:editing,onSave:saveLoad,onDelete:delLoad,onHardDelete:delForever,onClose:function(){setEditing(null);}}));
 }
 
 // ---- LoadModal (multi-driver) ----
 function LoadModal(props){
-  var drivers=props.drivers,schedule=props.schedule,managers=props.managers,crews=props.crews||[],trucks=props.trucks||[],trailers=props.trailers||[],allLoads=props.allLoads||[],load=props.load,onSave=props.onSave,onDelete=props.onDelete,onHardDelete=props.onHardDelete,onClose=props.onClose;
+  var drivers=props.drivers,schedule=props.schedule,managers=props.managers,crews=props.crews||[],trucks=props.trucks||[],trailers=props.trailers||[],equipmentTypes=props.equipmentTypes||[],places=props.places||[],allLoads=props.allLoads||[],load=props.load,onSave=props.onSave,onDelete=props.onDelete,onHardDelete=props.onHardDelete,onClose=props.onClose;
   var isNew=!load.id;
   var existingMoves=getMoves(load);
   var s1=useState({startFrom:load.startFrom||"",startTime:load.startTime||"",driverIds:load.driverId?[load.driverId]:[""],date:load.date||todayISO(),moveType:load.moveType||"maxxim",assignedById:load.assignedBy?load.assignedBy.id||"":"",crewName:load.crewName||"",truck:load.truck||"",trailer:load.trailer||"",notes:load.notes||"",permitUrl:load.permitUrl||"",permitName:load.permitName||"",moves:existingMoves.length?existingMoves:[blankMove()]});
@@ -775,12 +783,6 @@ function LoadModal(props){
             :h("select",{value:f.trailer,onChange:function(e){set("trailer",e.target.value);},className:"inp"},
                 h("option",{value:""},"— none —"),
                 trailers.map(function(c){return h("option",{key:c,value:c},c);})))),
-      h(Field,{label:"Crew Name (overall — optional)"},
-        crews.length===0
-          ?h("p",{className:"text-xs text-slate-400 border border-dashed border-slate-300 rounded-lg p-2"},"No crews yet — add them in the Manage tab.")
-          :h("select",{value:f.crewName,onChange:function(e){set("crewName",e.target.value);},className:"inp"},
-              h("option",{value:""},"— select crew —"),
-              crews.map(function(c){return h("option",{key:c,value:c},c);}))),
       conflicts.length>0?h("div",{className:"bg-amber-50 border border-amber-200 text-amber-800 rounded-lg p-2.5 text-xs space-y-0.5"},
         h("div",{className:"font-semibold"},"⚠ Possible double-booking:"),
         conflicts.map(function(c,i){return h("div",{key:i},c);})):null,
@@ -790,12 +792,20 @@ function LoadModal(props){
             h("div",{className:"flex items-center"},
               h("span",{className:"text-xs font-bold text-teal-700"},"MOVE "+(i+1)),
               f.moves.length>1?h("button",{onClick:function(){rmMove(m.id);},className:"ml-auto text-red-500"},"🗑️"):null),
+            h(Field,{label:"Equipment Type"},
+              equipmentTypes.length===0
+                ?h("p",{className:"text-xs text-slate-400 border border-dashed border-slate-300 rounded-lg p-2"},"Add equipment types in the Manage tab.")
+                :h("select",{value:m.equipmentType||"",onChange:function(e){updMove(m.id,{equipmentType:e.target.value});},className:"inp"},
+                    h("option",{value:""},"— select equipment —"),
+                    equipmentTypes.map(function(c){return h("option",{key:c,value:c},c);}))),
+            h(Field,{label:"Unit #"},h("input",{className:"inp",value:m.unitNumber||"",onChange:function(e){updMove(m.id,{unitNumber:e.target.value});},placeholder:"Unit number (if any)"})),
             h("div",{className:"space-y-2"},
               crews.length>0?h(Field,{label:"Crew Name — Pickup"},
                 h("select",{value:m.pickupCrew||"",onChange:function(e){updMove(m.id,{pickupCrew:e.target.value});},className:"inp"},
                   h("option",{value:""},"— select crew —"),
                   crews.map(function(c){return h("option",{key:c,value:c},c);}))):null,
               h("div",{className:"font-bold text-sm text-slate-800"},"(Pickup Location)"),
+              places.length>0?h(LRow,{label:"Quick-fill yard/vendor:"},h("select",{value:"",onChange:function(e){var p=places.find(function(x){return x.name===e.target.value;});if(p)updMove(m.id,{pickupPad:p.name,pickupCoords:p.coords||""});},className:"inp"},h("option",{value:""},"— pick a saved location —"),places.map(function(p){return h("option",{key:p.name,value:p.name},p.name);}))):null,
               h(LRow,{label:"Location Name:"},h("input",{className:"inp",value:m.pickupPad,onChange:function(e){updMove(m.id,{pickupPad:e.target.value});}})),
               h(LRow,{label:"Lease Road Entrance:"},h("input",{className:"inp",value:m.pickupLease,onChange:function(e){updMove(m.id,{pickupLease:e.target.value});},placeholder:"Coordinates or pin drop link"})),
               h(LRow,{label:"Location:"},h("input",{className:"inp",value:m.pickupCoords,onChange:function(e){updMove(m.id,{pickupCoords:e.target.value});},placeholder:"Coordinates or pin drop link"}))),
@@ -805,6 +815,7 @@ function LoadModal(props){
                   h("option",{value:""},"— select crew —"),
                   crews.map(function(c){return h("option",{key:c,value:c},c);}))):null,
               h("div",{className:"font-bold text-sm text-slate-800"},"(Drop-Off Location)"),
+              places.length>0?h(LRow,{label:"Quick-fill yard/vendor:"},h("select",{value:"",onChange:function(e){var p=places.find(function(x){return x.name===e.target.value;});if(p)updMove(m.id,{dropPad:p.name,dropCoords:p.coords||""});},className:"inp"},h("option",{value:""},"— pick a saved location —"),places.map(function(p){return h("option",{key:p.name,value:p.name},p.name);}))):null,
               h(LRow,{label:"Location Name:"},h("input",{className:"inp",value:m.dropPad,onChange:function(e){updMove(m.id,{dropPad:e.target.value});}})),
               h(LRow,{label:"Lease Road Entrance:"},h("input",{className:"inp",value:m.dropLease,onChange:function(e){updMove(m.id,{dropLease:e.target.value});},placeholder:"Coordinates or pin drop link"})),
               h(LRow,{label:"Location:"},h("input",{className:"inp",value:m.dropCoords,onChange:function(e){updMove(m.id,{dropCoords:e.target.value});},placeholder:"Coordinates or pin drop link"}))),
@@ -1046,7 +1057,7 @@ function DriverForm(props){
 
 // ---- ManageTab ----
 function ManageTab(props){
-  var managers=props.managers,drivers=props.drivers,crews=props.crews||[],dayRates=props.dayRates||[],trucks=props.trucks||[],trailers=props.trailers||[],auditLog=props.auditLog||[],act=props.act,showToast=props.showToast;
+  var managers=props.managers,drivers=props.drivers,crews=props.crews||[],dayRates=props.dayRates||[],trucks=props.trucks||[],trailers=props.trailers||[],equipmentTypes=props.equipmentTypes||[],places=props.places||[],auditLog=props.auditLog||[],act=props.act,showToast=props.showToast;
   var s2=useState(""); var mName=s2[0]; var setMName=s2[1];
   var s3=useState(""); var mPhone=s3[0]; var setMPhone=s3[1];
   var s4=useState(""); var resetId=s4[0]; var setResetId=s4[1];
@@ -1055,6 +1066,13 @@ function ManageTab(props){
   var s7=useState(""); var tkName=s7[0]; var setTkName=s7[1];
   var s8=useState(""); var trName=s8[0]; var setTrName=s8[1];
   var s9=useState(false); var showLog=s9[0]; var setShowLog=s9[1];
+  var s10=useState(""); var eqName=s10[0]; var setEqName=s10[1];
+  var s11=useState(""); var plName=s11[0]; var setPlName=s11[1];
+  var s12=useState(""); var plCoords=s12[0]; var setPlCoords=s12[1];
+  function addEquip(){var v=eqName.trim();if(!v||equipmentTypes.indexOf(v)!==-1){setEqName("");return;}act(function(){return db.setEquipmentTypes(equipmentTypes.concat([v]));},"Equipment type added");setEqName("");}
+  function removeEquip(name){act(function(){return db.setEquipmentTypes(equipmentTypes.filter(function(c){return c!==name;}));},"Equipment type removed");}
+  function addPlace(){var v=plName.trim();if(!v||places.some(function(p){return p.name===v;})){setPlName("");return;}act(function(){return db.setPlaces(places.concat([{name:v,coords:plCoords.trim()}]));},"Location added");setPlName("");setPlCoords("");}
+  function removePlace(name){act(function(){return db.setPlaces(places.filter(function(p){return p.name!==name;}));},"Location removed");}
   var curRate=dayRates.length?dayRates[dayRates.length-1].rate:0;
   var curFrom=dayRates.length?dayRates[dayRates.length-1].from:null;
   function addManager(){if(!mName.trim())return;act(function(){return db.addManager({name:mName.trim(),phone:mPhone.trim()});},"Manager added");setMName("");setMPhone("");}
@@ -1127,6 +1145,33 @@ function ManageTab(props){
       h("div",{className:"flex gap-2 border-t border-slate-100 pt-2"},
         h("input",{value:trName,onChange:function(e){setTrName(e.target.value);},onKeyDown:function(e){if(e.key==="Enter")addTrailer();},className:"inp flex-1",placeholder:"Trailer"}),
         h("button",{onClick:addTrailer,disabled:!trName.trim(),className:"bg-teal-600 disabled:opacity-40 text-white rounded-lg px-3 py-2 text-sm font-medium whitespace-nowrap"},"＋ Add"))),
+
+    h("div",{className:"bg-white rounded-xl p-4 shadow-sm space-y-3"},
+      h("h3",{className:"font-semibold text-slate-700"},"📦 Equipment Type"),
+      h("p",{className:"text-xs text-slate-500"},"Everything you haul (e.g. light tower, frac pump, sand silo). These appear in the Equipment Type dropdown on each move."),
+      equipmentTypes.length>0?h("div",{className:"flex flex-wrap gap-1.5"},equipmentTypes.map(function(c){
+        return h("div",{key:c,className:"flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5"},
+          h("span",{className:"text-sm font-medium text-slate-800"},c),
+          h("button",{onClick:function(){removeEquip(c);},className:"text-red-500 text-xs"},"✕"));
+      })):h("p",{className:"text-xs text-slate-400"},"No equipment types added yet."),
+      h("div",{className:"flex gap-2 border-t border-slate-100 pt-2"},
+        h("input",{value:eqName,onChange:function(e){setEqName(e.target.value);},onKeyDown:function(e){if(e.key==="Enter")addEquip();},className:"inp flex-1",placeholder:"Equipment name"}),
+        h("button",{onClick:addEquip,disabled:!eqName.trim(),className:"bg-teal-600 disabled:opacity-40 text-white rounded-lg px-3 py-2 text-sm font-medium whitespace-nowrap"},"＋ Add"))),
+
+    h("div",{className:"bg-white rounded-xl p-4 shadow-sm space-y-3"},
+      h("h3",{className:"font-semibold text-slate-700"},"📍 Yard / Vendor Locations"),
+      h("p",{className:"text-xs text-slate-500"},"Fixed locations (yards, vendors) with their coordinates or pin-drop link. When making an assignment you can quick-fill a pickup or drop-off from this list."),
+      places.length>0?h("div",{className:"space-y-1.5"},places.map(function(p){
+        return h("div",{key:p.name,className:"flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5"},
+          h("div",{className:"flex-1 min-w-0"},
+            h("div",{className:"text-sm font-medium text-slate-800"},p.name),
+            p.coords?h("div",{className:"text-xs text-slate-500 truncate"},p.coords):h("div",{className:"text-xs text-slate-400 italic"},"no coordinates")),
+          h("button",{onClick:function(){removePlace(p.name);},className:"text-red-500 text-xs shrink-0"},"✕"));
+      })):h("p",{className:"text-xs text-slate-400"},"No saved locations yet."),
+      h("div",{className:"space-y-2 border-t border-slate-100 pt-2"},
+        h("input",{value:plName,onChange:function(e){setPlName(e.target.value);},className:"inp",placeholder:"Location name (e.g. Stanton Yard)"}),
+        h("input",{value:plCoords,onChange:function(e){setPlCoords(e.target.value);},onKeyDown:function(e){if(e.key==="Enter")addPlace();},className:"inp",placeholder:"Coordinates or pin drop link"}),
+        h("button",{onClick:addPlace,disabled:!plName.trim(),className:"bg-teal-600 disabled:opacity-40 text-white rounded-lg px-3 py-2 text-sm font-medium whitespace-nowrap"},"＋ Add location"))),
 
     h("div",{className:"bg-white rounded-xl p-4 shadow-sm space-y-3"},
       h("h3",{className:"font-semibold text-slate-700"},"💵 Heavy Haul Driver Day Rate"),
@@ -1313,6 +1358,7 @@ function MyLoads(props){
               var msv=moveStatus(m);
               return h("div",{key:m.id,className:"rounded-lg border p-2.5 "+(msv==="completed"?"bg-green-50 border-green-200":"bg-white border-slate-200")},
                 h("div",{className:"text-[10px] font-bold text-teal-700 mb-1"},"MOVE "+(i+1)),
+                (m.equipmentType||m.unitNumber)?h("div",{className:"text-xs font-semibold text-slate-700 mb-1"},"📦 "+[m.equipmentType,(m.unitNumber?"Unit "+m.unitNumber:"")].filter(Boolean).join(" · ")):null,
                 h("div",{className:"flex flex-wrap gap-1 mb-1.5"},
                   STATUS_FLOW.map(function(st){
                     var on=msv===st.v;
