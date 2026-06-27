@@ -14,6 +14,8 @@
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700;800;900&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
@@ -294,6 +296,7 @@ function rowToLoad(r){
     permitUrl:r.permit_url||"", permitName:r.permit_name||"",
     checklist:(r.checklist&&typeof r.checklist==="object")?r.checklist:{},
     photos:Array.isArray(r.photos)?r.photos:[],
+    comments:Array.isArray(r.comments)?r.comments:[],
     createdAt:r.created_at?Date.parse(r.created_at):0,
   };
 }
@@ -308,6 +311,7 @@ function loadToRow(L){
     truck:L.truck||"", trailer:L.trailer||"", status_history:L.statusHistory||[],
     archived:!!L.archived, problem_type:L.problemType||null, problem_note:L.problemNote||null,
     permit_url:L.permitUrl||null, permit_name:L.permitName||null, checklist:L.checklist||{}, photos:L.photos||[],
+    comments:L.comments||[],
   };
 }
 
@@ -321,6 +325,7 @@ var db = {
       sb.from("settings").select("*"),
       sb.from("audit_log").select("*").order("at",{ascending:false}).limit(300),
       sb.from("push_subscriptions").select("driver_id"),
+      sb.from("announcements").select("*").order("at",{ascending:false}).limit(30),
     ]);
     if(res[0].error) throw new Error("drivers: "+res[0].error.message);
     if(res[2].error) throw new Error("schedule: "+res[2].error.message);
@@ -340,10 +345,11 @@ var db = {
     dayRates.sort(function(a,b){return (a.from||"").localeCompare(b.from||"");});
     var pushDriverIds=[]; var pushKnown=false;
     if(res[6]&&!res[6].error){pushKnown=true;(res[6].data||[]).forEach(function(r){if(r.driver_id&&pushDriverIds.indexOf(r.driver_id)===-1)pushDriverIds.push(r.driver_id);});}
+    var announcements=(res[7]&&!res[7].error&&res[7].data)?res[7].data:[];
     return {
       drivers:res[0].data||[], managers:res[1].data||[],
       schedule:schedule, loads:(res[3].data||[]).map(rowToLoad), passwords:passwords, crews:crews, dayRates:dayRates, trucks:trucks, trailers:trailers, equipmentTypes:equipmentTypes, places:places,
-      auditLog:(res[5]&&res[5].data)||[], pushDriverIds:pushDriverIds, pushKnown:pushKnown
+      auditLog:(res[5]&&res[5].data)||[], pushDriverIds:pushDriverIds, pushKnown:pushKnown, announcements:announcements
     };
   },
   getPw: async function(id){
@@ -379,6 +385,7 @@ var db = {
   setEquipmentTypes: function(arr){return sb.from("settings").upsert({key:"equipment_types",value:JSON.stringify(arr)});},
   setPlaces:    function(arr){return sb.from("settings").upsert({key:"places",value:JSON.stringify(arr)});},
   savePushSub:  function(driverId,endpoint,p256dh,auth){return sb.from("push_subscriptions").upsert({driver_id:driverId,endpoint:endpoint,p256dh:p256dh,auth:auth},{onConflict:"endpoint"});},
+  addAnnouncement: function(author,text){return sb.from("announcements").insert({author:author||"",text:text||""});},
   notifyDriver: function(payload){
     function go(){return sb.functions.invoke("notify-driver",{body:payload}).then(function(r){if(r&&r.error)throw r.error;return r;});}
     try{return go().catch(function(){return go();}).catch(function(){});}catch(e){return Promise.resolve();}
@@ -414,6 +421,7 @@ function applyPatchToLoad(l,p){
   if("moves" in p)n.moves=p.moves;
   if("checklist" in p)n.checklist=p.checklist;
   if("photos" in p)n.photos=p.photos;
+  if("comments" in p)n.comments=p.comments;
   if("acknowledged" in p)n.acknowledged=p.acknowledged;
   if("acknowledged_at" in p)n.acknowledgedAt=p.acknowledged_at?Date.parse(p.acknowledged_at):0;
   if("problem_type" in p)n.problemType=p.problem_type||"";
@@ -609,6 +617,7 @@ function App(){
   var s21=useState(function(){try{var v=localStorage.getItem("hhd_cab");return v===null?true:v==="1";}catch(e){return true;}}); var cabMode=s21[0]; var setCabMode=s21[1];
   var s22=useState([]); var pushIds=s22[0]; var setPushIds=s22[1];
   var s23=useState(false); var pushKnown=s23[0]; var setPushKnown=s23[1];
+  var s24=useState(function(){return C0.announcements||[];}); var announcements=s24[0]; var setAnnouncements=s24[1];
   function toggleCab(){var v=!cabMode;setCabMode(v);try{localStorage.setItem("hhd_cab",v?"1":"0");}catch(e){}}
 
   function showToast(m){setToast(m);setTimeout(function(){setToast("");},1800);}
@@ -648,8 +657,9 @@ function App(){
       setSchedule(d.schedule); setLoads(applyOutbox(d.loads));
       setPasswords(d.passwords); setCrews(d.crews||[]); setDayRates(d.dayRates||[]); setTrucks(d.trucks||[]); setTrailers(d.trailers||[]); setAuditLog(d.auditLog||[]); setEquipmentTypes(d.equipmentTypes||[]); setPlaces(d.places||[]); setDbError("");
       if(d.pushKnown){setPushIds(d.pushDriverIds||[]);setPushKnown(true);}
+      setAnnouncements(d.announcements||[]);
       setOnline(true); everLoaded.current=true;
-      writeCache({drivers:d.drivers,managers:d.managers,schedule:d.schedule,loads:d.loads,crews:d.crews||[],dayRates:d.dayRates||[],trucks:d.trucks||[],trailers:d.trailers||[],equipmentTypes:d.equipmentTypes||[],places:d.places||[],auditLog:d.auditLog||[]});
+      writeCache({drivers:d.drivers,managers:d.managers,schedule:d.schedule,loads:d.loads,crews:d.crews||[],dayRates:d.dayRates||[],trucks:d.trucks||[],trailers:d.trailers||[],equipmentTypes:d.equipmentTypes||[],places:d.places||[],auditLog:d.auditLog||[],announcements:d.announcements||[]});
       drainOutbox();
     }catch(e){
       setOnline(false);
@@ -743,6 +753,7 @@ function App(){
       h("nav",{className:"max-w-6xl mx-auto px-2 pb-1.5 flex gap-1 overflow-x-auto"},
         isDispatch?h(Fragment,null,
           h(Tab,{a:view==="dispatch",on:function(){setView("dispatch");},ic:"📋",l:"Dispatch"}),
+          h(Tab,{a:view==="tracker",on:function(){setView("tracker");},ic:"📍",l:"Tracker"}),
           h(Tab,{a:view==="schedule",on:function(){setView("schedule");},ic:"📅",l:"Schedule"}),
           h(Tab,{a:view==="dayrate",on:function(){setView("dayrate");},ic:"💲",l:"Day Rate"}),
           h(Tab,{a:view==="drivers",on:function(){setView("drivers");},ic:"👥",l:"Drivers"}),
@@ -755,19 +766,124 @@ function App(){
         ?("📴 Offline — showing last synced data"+(pending.length>0?" · "+pending.length+" change"+(pending.length!==1?"s":"")+" will sync when you're back online":""))
         :("🔄 Syncing "+pending.length+" change"+(pending.length!==1?"s":"")+"…")):null,
     h("main",{className:"max-w-6xl mx-auto p-3"},
-      isDispatch&&view==="dispatch"&&h(DispatchBoard,{drivers:drivers,loads:loads,schedule:schedule,managers:managers,crews:crews,trucks:trucks,trailers:trailers,equipmentTypes:equipmentTypes,places:places,driverName:driverName,act:act,audit:audit,pushIds:pushIds,pushKnown:pushKnown}),
+      isDispatch&&view==="dispatch"&&h(DispatchBoard,{drivers:drivers,loads:loads,schedule:schedule,managers:managers,crews:crews,trucks:trucks,trailers:trailers,equipmentTypes:equipmentTypes,places:places,driverName:driverName,act:act,audit:audit,pushIds:pushIds,pushKnown:pushKnown,meName:(identity.name||"Dispatch")}),
+      isDispatch&&view==="tracker"&&h(TrackerTab,{drivers:drivers,trucks:trucks}),
       isDispatch&&view==="schedule"&&h(ScheduleBoard,{drivers:drivers,schedule:schedule,act:act}),
       isDispatch&&view==="dayrate"&&h(DayRate,{drivers:drivers,schedule:schedule,loads:loads,dayRates:dayRates,showToast:showToast}),
       isDispatch&&view==="drivers"&&h(DriversTab,{drivers:drivers,act:act}),
-      isDispatch&&view==="manage"&&h(ManageTab,{managers:managers,drivers:drivers,crews:crews,dayRates:dayRates,trucks:trucks,trailers:trailers,equipmentTypes:equipmentTypes,places:places,auditLog:auditLog,act:act,showToast:showToast}),
-      !isDispatch&&view==="myloads"&&h(MyLoads,{identity:identity,loads:loads,act:act,audit:audit,mutateLoad:mutateLoad}),
+      isDispatch&&view==="manage"&&h(ManageTab,{managers:managers,drivers:drivers,crews:crews,dayRates:dayRates,trucks:trucks,trailers:trailers,equipmentTypes:equipmentTypes,places:places,auditLog:auditLog,announcements:announcements,identity:identity,act:act,showToast:showToast}),
+      !isDispatch&&view==="myloads"&&h(MyLoads,{identity:identity,loads:loads,act:act,audit:audit,mutateLoad:mutateLoad,meName:driverName(identity.driverId),announcements:announcements}),
       !isDispatch&&view==="myschedule"&&h(MySchedule,{identity:identity,schedule:schedule,act:act})),
     toast&&h("div",{className:"fixed bottom-5 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-sm font-medium px-4 py-2.5 rounded-xl shadow-lg z-50 border border-white/10 max-w-[90vw] text-center"},toast));
 }
 
 // ---- DispatchBoard ----
+function TrackerTab(props){
+  var drivers=props.drivers||[];
+  var s1=useState([]); var rows=s1[0]; var setRows=s1[1];
+  var s2=useState(true); var loadingT=s2[0]; var setLoadingT=s2[1];
+  var s3=useState(""); var err=s3[0]; var setErr=s3[1];
+  var s4=useState(0); var lastAt=s4[0]; var setLastAt=s4[1];
+  var s5=useState(false); var notConf=s5[0]; var setNotConf=s5[1];
+  var mapEl=useRef(null), mapRef=useRef(null), markersRef=useRef({}), fitted=useRef(false), firstLoad=useRef(true);
+
+  function appDriverName(samsaraName){
+    if(!samsaraName)return "";
+    var m=drivers.find(function(d){return d.name&&samsaraName&&d.name.toLowerCase().trim()===samsaraName.toLowerCase().trim();});
+    return m?m.name:samsaraName;
+  }
+  function load(){
+    if(!sb){setLoadingT(false);setNotConf(true);return;}
+    setLoadingT(true);
+    sb.functions.invoke("samsara-locations",{body:{}}).then(function(res){
+      setLoadingT(false); firstLoad.current=false;
+      if(res&&res.error){setErr("Couldn't reach the tracker service — make sure the samsara-locations function is deployed.");return;}
+      var d=(res&&res.data)||{};
+      if(d.ok===false){ if(d.reason==="not_configured"){setNotConf(true);setErr("");} else {setErr(d.detail||"Samsara request failed — check the API token and its permissions.");} return; }
+      setNotConf(false); setErr("");
+      setRows(d.vehicles||[]); setLastAt(Date.now());
+    }).catch(function(){setLoadingT(false);firstLoad.current=false;setErr("Couldn't reach the tracker service.");});
+  }
+  useEffect(function(){load();var t=setInterval(load,30000);return function(){clearInterval(t);};},[]);
+  useEffect(function(){
+    if(!window.L||!mapEl.current||mapRef.current)return;
+    var m=window.L.map(mapEl.current,{zoomControl:true}).setView([31.95,-102.0],7);
+    window.L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"© OpenStreetMap"}).addTo(m);
+    mapRef.current=m;
+    return function(){try{m.remove();}catch(e){}mapRef.current=null;};
+  },[]);
+  useEffect(function(){
+    var m=mapRef.current; if(!m||!window.L)return;
+    var seen={};
+    rows.forEach(function(r){
+      if(typeof r.lat!=="number"||typeof r.lng!=="number")return;
+      seen[r.vehicleId]=true;
+      var nm=appDriverName(r.driverName);
+      var label=(nm||r.vehicleName||"?").split(/\s+/).map(function(w){return w[0];}).slice(0,2).join("").toUpperCase();
+      var icon=window.L.divIcon({className:"",iconSize:[30,30],iconAnchor:[15,15],html:'<div style="background:'+(r.driverName?"#0d9488":"#64748b")+';color:#fff;border:2px solid #fff;border-radius:9999px;width:30px;height:30px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;">'+label+'</div>'});
+      var pop="<b>"+(nm||"No driver signed in")+"</b><br>"+(r.vehicleName||"")+(r.speedMph!=null?"<br>"+r.speedMph+" mph":"")+(r.address?"<br>"+r.address:"");
+      var mk=markersRef.current[r.vehicleId];
+      if(mk){mk.setLatLng([r.lat,r.lng]);mk.setIcon(icon);if(mk.getPopup())mk.setPopupContent(pop);else mk.bindPopup(pop);}
+      else{mk=window.L.marker([r.lat,r.lng],{icon:icon}).addTo(m).bindPopup(pop);markersRef.current[r.vehicleId]=mk;}
+    });
+    Object.keys(markersRef.current).forEach(function(id){if(!seen[id]){try{m.removeLayer(markersRef.current[id]);}catch(e){}delete markersRef.current[id];}});
+    if(!fitted.current){
+      var pts=rows.filter(function(r){return typeof r.lat==="number";}).map(function(r){return [r.lat,r.lng];});
+      if(pts.length){try{m.fitBounds(pts,{padding:[40,40],maxZoom:12});}catch(e){}fitted.current=true;}
+    }
+  },[rows]);
+
+  function ago(t){var d=t?Date.parse(t):0;if(!d)return "";var s=Math.max(0,Math.round((Date.now()-d)/1000));if(s<60)return s+"s ago";var mn=Math.round(s/60);if(mn<60)return mn+"m ago";return Math.round(mn/60)+"h ago";}
+
+  var withLoc=rows.filter(function(r){return typeof r.lat==="number";});
+  var signedIn=withLoc.filter(function(r){return r.driverName;});
+
+  return h("div",{className:"space-y-3"},
+    h("div",{className:"flex items-center gap-2"},
+      h("h2",{className:"font-bold text-slate-800 flex-1"},"Driver Tracker"),
+      lastAt?h("span",{className:"text-[11px] text-slate-400"},"Updated "+fmtClock(lastAt)):null,
+      h("button",{onClick:load,className:"text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg px-3 py-1.5"},loadingT?"…":"Refresh")),
+
+    notConf?h("div",{className:"bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-900 space-y-1.5"},
+      h("div",{className:"font-bold"},"🔌 Connect Samsara to turn on live tracking"),
+      h("p",{className:"text-[13px]"},"The app is ready, but the Samsara link isn't set up yet. A one-time server-side setup is needed (deploy the samsara-locations function and add your Samsara API token). Once that's done, your trucks show here automatically."),
+      h("p",{className:"text-[12px] text-amber-700"},"See the setup steps file included with this update.")):null,
+
+    err&&!notConf?h("div",{className:"bg-red-50 border border-red-200 rounded-xl p-3 text-sm text-red-700"},"⚠ "+err):null,
+
+    (!notConf&&!err)?h(Fragment,null,
+      h("div",{className:"grid grid-cols-2 gap-2"},
+        h(Stat,{label:"Signed in",value:signedIn.length,color:"text-teal-700"}),
+        h(Stat,{label:"Trucks with GPS",value:withLoc.length,color:"text-slate-700"})),
+      window.L?h("div",{ref:mapEl,className:"rounded-xl overflow-hidden border border-slate-200",style:{height:"320px"}}):
+        h("div",{className:"bg-white rounded-xl p-4 shadow-sm text-sm text-slate-500"},"Map couldn't load (no connection). The list below still works."),
+      (loadingT&&firstLoad.current)?h("div",{className:"text-center text-sm text-slate-400 py-4"},"Locating trucks…"):
+      withLoc.length===0?h(Empty,{msg:"No trucks are reporting a location right now."}):
+      h("div",{className:"space-y-2"},
+        withLoc.sort(function(a,b){return (b.driverName?1:0)-(a.driverName?1:0);}).map(function(r){
+          var nm=appDriverName(r.driverName);
+          return h("div",{key:r.vehicleId,className:"bg-white rounded-xl p-3 shadow-sm"},
+            h("div",{className:"flex items-center gap-2"},
+              h("span",{className:"w-2.5 h-2.5 rounded-full "+(r.speedMph>1?"bg-teal-500":"bg-slate-300")}),
+              h("span",{className:"font-semibold text-slate-800 flex-1 truncate"},nm||"No driver signed in"),
+              r.speedMph!=null?h("span",{className:"text-xs font-bold tnum "+(r.speedMph>1?"text-teal-700":"text-slate-400")},r.speedMph+" mph"):null),
+            h("div",{className:"text-xs text-slate-500 mt-0.5 flex flex-wrap gap-x-2"},
+              r.vehicleName?h("span",null,"🚚 "+r.vehicleName):null,
+              r.time?h("span",null,"🕑 "+ago(r.time)):null),
+            r.address?h("div",{className:"text-xs text-slate-600 mt-1"},"📍 "+r.address):null,
+            h("a",{href:"https://www.google.com/maps?q="+r.lat+","+r.lng,target:"_blank",rel:"noreferrer",
+              className:"inline-flex items-center gap-1 mt-2 text-xs font-semibold text-teal-700 bg-teal-50 border border-teal-200 rounded-lg px-2.5 py-1.5"},"Open in Maps ↗"));
+        }))):null);
+}
+
+// ---- DispatchBoard ----
 function DispatchBoard(props){
-  var drivers=props.drivers,loads=props.loads,schedule=props.schedule,managers=props.managers,crews=props.crews,trucks=props.trucks,trailers=props.trailers,equipmentTypes=props.equipmentTypes,places=props.places,driverName=props.driverName,act=props.act,audit=props.audit||function(){},pushIds=props.pushIds||[],pushKnown=props.pushKnown;
+  var drivers=props.drivers,loads=props.loads,schedule=props.schedule,managers=props.managers,crews=props.crews,trucks=props.trucks,trailers=props.trailers,equipmentTypes=props.equipmentTypes,places=props.places,driverName=props.driverName,act=props.act,audit=props.audit||function(){},pushIds=props.pushIds||[],pushKnown=props.pushKnown,meName=props.meName||"Dispatch";
+  function onComment(load,newComments,text){
+    act(function(){return db.updateLoad(load.id,{comments:newComments});});
+    try{db.notifyDriver({driverId:load.driverId,title:"💬 Message from "+meName,body:text,url:"./",tag:"hhd-cmt-"+Date.now()});}catch(e){}
+    audit("Commented on load",driverName(load.driverId)+" · "+fmtMDY(load.date));
+  }
   var s1=useState(todayISO()); var date=s1[0]; var setDate=s1[1];
   var s2=useState(null); var editing=s2[0]; var setEditing=s2[1];
   var s3=useState(""); var q=s3[0]; var setQ=s3[1];
@@ -793,6 +909,18 @@ function DispatchBoard(props){
       .sort(function(a,b){return (a.createdAt||0)-(b.createdAt||0);});
   },[active,date,q,fStatus,fCrew,fYard]);
   function byStatus(k){return dayLoads.filter(function(l){return statusCol(statusFromMoves(getMoves(l),l.status))===k;});}
+  var conflicts=useMemo(function(){
+    var byTruck={},byTrailer={},byDriver={},bad={},msgs=[];
+    dayLoads.forEach(function(l){
+      if(l.truck)(byTruck[l.truck]=byTruck[l.truck]||[]).push(l);
+      if(l.trailer)(byTrailer[l.trailer]=byTrailer[l.trailer]||[]).push(l);
+      (byDriver[l.driverId]=byDriver[l.driverId]||[]).push(l);
+    });
+    Object.keys(byTruck).forEach(function(t){if(byTruck[t].length>1){msgs.push("🚚 Truck "+t+" is on "+byTruck[t].length+" loads today");byTruck[t].forEach(function(l){bad[l.id]=true;});}});
+    Object.keys(byTrailer).forEach(function(t){if(byTrailer[t].length>1){msgs.push("🛻 Trailer "+t+" is on "+byTrailer[t].length+" loads today");byTrailer[t].forEach(function(l){bad[l.id]=true;});}});
+    Object.keys(byDriver).forEach(function(d){if(byDriver[d].length>1){msgs.push("👤 "+driverName(d)+" has "+byDriver[d].length+" loads today");byDriver[d].forEach(function(l){bad[l.id]=true;});}});
+    return {msgs:msgs,bad:bad};
+  },[dayLoads]);
   function saveLoad(data){
     if(data.id){
       var orig=loads.find(function(x){return x.id===data.id;});
@@ -867,9 +995,9 @@ function DispatchBoard(props){
             var spineHex=l.problemType?"#ef4444":derived==="completed"?"#22c55e":derived==="inprogress"?"#f59e0b":"#cbd5e1";
             var eqList=ms.map(function(m){return m.equipmentType;}).filter(function(v,i,a){return v&&a.indexOf(v)===i;});
             return h("tr",{key:l.id,onClick:function(){setEditing(l);},
-              className:"border-b border-slate-100 hover:bg-slate-50 cursor-pointer "+(l.problemType?"bg-red-50":"")},
+              className:"border-b border-slate-100 hover:bg-slate-50 cursor-pointer "+(l.problemType?"bg-red-50":conflicts.bad[l.id]?"bg-amber-50":"")},
               h("td",{style:{borderLeft:"4px solid "+spineHex}}),
-              h("td",{className:"px-2 py-2 font-semibold text-slate-800 whitespace-nowrap"},driverName(l.driverId),l.problemType?h("span",{className:"ml-1 text-red-600"},"⚠"):null),
+              h("td",{className:"px-2 py-2 font-semibold text-slate-800 whitespace-nowrap"},driverName(l.driverId),l.problemType?h("span",{className:"ml-1 text-red-600"},"⚠"):null,conflicts.bad[l.id]?h("span",{className:"ml-1 text-amber-600",title:"Possible conflict"},"⚠"):null),
               h("td",{className:"px-2 py-2"},h("span",{className:"text-[10px] font-bold px-1.5 py-0.5 rounded-full "+(derived==="completed"?"bg-green-100 text-green-700":derived==="inprogress"?"bg-amber-100 text-amber-700":"bg-slate-100 text-slate-600")},si.l)),
               h("td",{className:"px-2 py-2"},h(MoveChip,{id:l.moveType})),
               h("td",{className:"px-2 py-2 text-slate-600 max-w-[160px] truncate"},(ms[0]?ms[0].pickupPad||"—":"—")+" → "+(ms[ms.length-1]?ms[ms.length-1].dropPad||"—":"—")),
@@ -891,6 +1019,10 @@ function DispatchBoard(props){
             h("div",{className:"text-[11px] text-slate-400"},fmtShort(l.date)+(l.problemAt?" · flagged "+fmtClock(l.problemAt):""))),
           h("button",{onClick:function(){clearProb(l);},className:"text-[11px] text-teal-700 font-semibold shrink-0 px-2 py-1"},"Resolve"))
       })):null,
+    conflicts.msgs.length>0?h("div",{className:"bg-amber-50 border border-amber-300 rounded-xl p-3"},
+      h("div",{className:"text-sm font-bold text-amber-800 mb-1"},"⚠ "+conflicts.msgs.length+" possible scheduling conflict"+(conflicts.msgs.length!==1?"s":"")+" today"),
+      h("div",{className:"space-y-0.5"},conflicts.msgs.map(function(m,i){return h("div",{key:i,className:"text-xs text-amber-900"},m);})),
+      h("div",{className:"text-[11px] text-amber-600 mt-1"},"Review the highlighted loads below.")):null,
     h("div",{className:"bg-white rounded-xl p-3 shadow-sm flex flex-wrap items-center gap-2"},
       h("button",{onClick:function(){setDate(addDays(date,-1));},className:"p-1.5 rounded hover:bg-slate-100"},"‹"),
       h("input",{type:"date",value:date,onChange:function(e){setDate(e.target.value);},className:"border border-slate-300 rounded px-2 py-1 text-sm"}),
@@ -930,9 +1062,10 @@ function DispatchBoard(props){
               var spineHex=l.problemType?"#ef4444":derived==="completed"?"#22c55e":derived==="inprogress"?"#f59e0b":"#cbd5e1";
               return h("button",{key:l.id,onClick:function(){setEditing(l);},
                 style:{borderLeftWidth:"4px",borderLeftColor:spineHex},
-                className:"w-full text-left border rounded-lg p-2.5 hover:border-teal-400 "+(l.problemType?"border-red-200 bg-red-50":"border-slate-200 bg-white")},
+                className:"w-full text-left border rounded-lg p-2.5 hover:border-teal-400 "+(conflicts.bad[l.id]?"ring-2 ring-amber-400 ":"")+(l.problemType?"border-red-200 bg-red-50":"border-slate-200 bg-white")},
                 h("div",{className:"flex items-center gap-2"},
                   h("span",{className:"font-semibold text-sm text-slate-800 truncate flex-1"},driverName(l.driverId)),
+                  conflicts.bad[l.id]?h("span",{className:"text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700"},"⚠ Conflict"):null,
                   h("span",{className:"text-[10px] font-bold px-1.5 py-0.5 rounded-full "+(derived==="completed"?"bg-green-100 text-green-700":derived==="inprogress"?"bg-amber-100 text-amber-700":"bg-slate-100 text-slate-600")},si.l),
                   h(MoveChip,{id:l.moveType})),
                 l.problemType?h("div",{className:"text-[11px] text-red-700 font-semibold mt-1"},"⚠ "+l.problemType+(l.problemNote?" — "+l.problemNote:"")):null,
@@ -962,12 +1095,20 @@ function DispatchBoard(props){
           h("button",{onClick:function(){restore(l);},className:"text-xs bg-teal-50 text-teal-700 border border-teal-200 rounded-lg px-2.5 py-1.5 font-medium shrink-0"},"Restore"),
           h("button",{onClick:function(){hardDelete(l);},className:"text-xs text-red-500 shrink-0 px-1"},"Delete"));
       }))),
-    editing&&h(LoadModal,{drivers:drivers,schedule:schedule,managers:managers,crews:crews,trucks:trucks,trailers:trailers,equipmentTypes:equipmentTypes,places:places,allLoads:active,load:editing,pushIds:pushIds,pushKnown:pushKnown,onSave:saveLoad,onDelete:delLoad,onHardDelete:delForever,onClose:function(){setEditing(null);}}));
+    editing&&h(LoadModal,{drivers:drivers,schedule:schedule,managers:managers,crews:crews,trucks:trucks,trailers:trailers,equipmentTypes:equipmentTypes,places:places,allLoads:active,load:editing,pushIds:pushIds,pushKnown:pushKnown,meName:meName,onComment:onComment,onSave:saveLoad,onDelete:delLoad,onHardDelete:delForever,onClose:function(){setEditing(null);}}));
 }
 
 // ---- LoadModal (multi-driver) ----
 function LoadModal(props){
-  var drivers=props.drivers,schedule=props.schedule,managers=props.managers,crews=props.crews||[],trucks=props.trucks||[],trailers=props.trailers||[],equipmentTypes=props.equipmentTypes||[],places=props.places||[],allLoads=props.allLoads||[],load=props.load,onSave=props.onSave,onDelete=props.onDelete,onHardDelete=props.onHardDelete,onClose=props.onClose,pushIds=props.pushIds||[],pushKnown=props.pushKnown;
+  var drivers=props.drivers,schedule=props.schedule,managers=props.managers,crews=props.crews||[],trucks=props.trucks||[],trailers=props.trailers||[],equipmentTypes=props.equipmentTypes||[],places=props.places||[],allLoads=props.allLoads||[],load=props.load,onSave=props.onSave,onDelete=props.onDelete,onHardDelete=props.onHardDelete,onClose=props.onClose,pushIds=props.pushIds||[],pushKnown=props.pushKnown,meName=props.meName||"Dispatch",onComment=props.onComment;
+  var lcm=useState((load&&load.comments)||[]); var localCmts=lcm[0]; var setLocalCmts=lcm[1];
+  var cmv=useState(""); var cmVal=cmv[0]; var setCmVal=cmv[1];
+  function sendComment(){
+    var t=cmVal.trim(); if(!t||!load||!load.id)return;
+    var nc=localCmts.concat([{by:"manager",role:"manager",name:meName,text:t,at:Date.now()}]);
+    setLocalCmts(nc); setCmVal("");
+    if(onComment)onComment(load,nc,t);
+  }
   var isNew=!load.id;
   var existingMoves=getMoves(load);
   var s1=useState({startFrom:load.startFrom||"",startTime:load.startTime||"",driverIds:load.driverId?[load.driverId]:[""],date:load.date||todayISO(),moveType:load.moveType||"maxxim",assignedById:load.assignedBy?load.assignedBy.id||"":"",crewName:load.crewName||"",truck:load.truck||"",trailer:load.trailer||"",notes:load.notes||"",permitUrl:load.permitUrl||"",permitName:load.permitName||"",moves:existingMoves.length?existingMoves:[blankMove()]});
@@ -1123,6 +1264,7 @@ function LoadModal(props){
           return h("a",{key:i,href:p.url,target:"_blank",rel:"noreferrer",className:"text-xs text-teal-700 underline"},"📷 Photo "+(i+1));
         })):null):null,
       !canSubmit?h("p",{className:"text-[11px] text-slate-400"},"Select at least one driver and an Assigned By manager to send this assignment."):null,
+      !isNew?h(CommentThread,{comments:localCmts,value:cmVal,onChange:setCmVal,onSend:sendComment}):null,
       h("div",{className:"flex gap-2 pt-1"},
         h("button",{disabled:!canSubmit,onClick:save,className:"flex-1 bg-teal-600 disabled:opacity-40 text-white rounded-lg py-2.5 font-medium"},isNew?("Assign"+(filledDriverIds.length>1?" ("+filledDriverIds.length+" drivers)":"")):"Save"),
         !isNew?h("button",{onClick:function(){onDelete(load.id);},className:"px-3 rounded-lg border-2 border-amber-200 text-amber-700 text-sm font-medium"},"🗄 Archive"):null,
@@ -1231,7 +1373,14 @@ function DayRate(props){
     return {rows:rows,detail:detail,total:rows.reduce(function(s,r){return s+r.amount;},0),totalDays:rows.reduce(function(s,r){return s+r.days;},0)};
   },[loads,drivers,dayRates,pStart,pEnd]);
   function exportPay(){
-    var summary=[["Driver","Paid Days","Amount ($)"]];
+    var periodLabel=fmtMDY(pStart)+" – "+fmtMDY(addDays(pEnd,-1));
+    var summary=[
+      ["Fountainhead Logistics — Driver Pay Summary"],
+      ["Pay period",periodLabel],
+      ["Generated",fmtMDY(todayISO())],
+      [],
+      ["Driver","Paid Days","Amount ($)"]
+    ];
     pay.rows.filter(function(r){return r.days>0;}).sort(function(a,b){return b.amount-a.amount;}).forEach(function(r){summary.push([r.name,r.days,r.amount]);});
     summary.push(["TOTAL",pay.totalDays,pay.total]);
     var det=[["Driver","Date","Day Rate ($)"]];
@@ -1349,8 +1498,46 @@ function Section(props){
       h("span",{className:"text-slate-400 text-[10px]"},open?"▲":"▼")),
     open?h("div",{className:"px-4 pb-4 space-y-3"},props.children):null);
 }
+function ManagerAlerts(){
+  var n1=useState(("Notification"in window)?Notification.permission:"unsupported"); var perm=n1[0]; var setPerm=n1[1];
+  var n2=useState(""); var st=n2[0]; var setSt=n2[1];
+  useEffect(function(){if(perm==="granted"){setSt(function(s){return s||"working";});subscribeToPush("mgr:ALL").then(function(r){setSt(r&&r.ok?"ready":"failed");});}},[perm]);
+  function enable(){if(!("Notification"in window))return;setSt("working");Notification.requestPermission().then(function(p){setPerm(p);if(p==="granted"){subscribeToPush("mgr:ALL").then(function(r){setSt(r&&r.ok?"ready":"failed");});}else setSt("");});}
+  function test(){notify("Manager alert test ✅","You'll be alerted here when a driver flags a problem or delivers a load.",{url:"./"});}
+  return h("div",null,
+    h("p",{className:"text-xs text-slate-500 mb-2"},"Get a push notification when any driver flags a problem or marks a load delivered. Turn this on once per device you want alerts on."),
+    perm==="unsupported"?h("div",{className:"text-sm text-slate-500"},"This device doesn't support notifications."):
+    perm==="granted"
+      ? (st==="ready"?h("button",{onClick:test,className:"w-full bg-teal-50 border border-teal-200 text-teal-800 rounded-xl p-2.5 text-sm font-medium"},"🔔 Manager alerts are on — tap to send a test")
+        : st==="working"?h("div",{className:"w-full bg-slate-50 border border-slate-200 text-slate-500 rounded-xl p-2.5 text-sm text-center"},"🔔 Finishing setup…")
+        : h("button",{onClick:enable,className:"w-full bg-amber-50 border border-amber-200 text-amber-800 rounded-xl p-3 text-sm font-medium"},"🔔 Couldn't finish setup — tap to retry"))
+      : h("button",{onClick:enable,className:"w-full bg-amber-50 border border-amber-200 text-amber-800 rounded-xl p-3 text-sm font-medium"},
+          perm==="denied"?"🔔 Blocked — enable notifications for this app in your phone/browser settings":"🔔 Turn on manager alerts"));
+}
+function BroadcastSection(props){
+  var drivers=props.drivers||[],act=props.act,author=props.author||"Dispatch",announcements=props.announcements||[];
+  var s=useState(""); var txt=s[0]; var setTxt=s[1];
+  function send(){
+    var t=txt.trim(); if(!t)return;
+    act(function(){return Promise.resolve(db.addAnnouncement(author,t));},"Announcement sent to all drivers");
+    drivers.forEach(function(d){try{db.notifyDriver({driverId:d.id,title:"📢 Announcement",body:t,url:"./",tag:"hhd-ann-"+Date.now()});}catch(e){}});
+    setTxt("");
+  }
+  return h("div",null,
+    h("p",{className:"text-xs text-slate-500 mb-2"},"Send a message to every driver at once — it pushes to their phones and shows at the top of their app."),
+    h("textarea",{value:txt,onChange:function(e){setTxt(e.target.value);},rows:3,placeholder:"e.g., Yard closing early today at 4 PM — wrap up your loads.",className:"inp"}),
+    h("button",{onClick:send,disabled:!txt.trim(),className:"w-full mt-2 bg-slate-900 disabled:opacity-40 text-white rounded-lg py-2.5 text-sm font-semibold"},"📢 Send to all drivers"),
+    announcements.length?h("div",{className:"mt-3 space-y-1.5"},
+      h("div",{className:"text-[11px] font-bold text-slate-400 uppercase"},"Recent"),
+      announcements.slice(0,5).map(function(a){
+        var when=""; try{when=new Date(a.at).toLocaleString([],{month:"numeric",day:"numeric",hour:"numeric",minute:"2-digit"});}catch(e){}
+        return h("div",{key:a.id,className:"text-xs bg-slate-50 rounded-lg p-2"},
+          h("div",{className:"text-slate-700 whitespace-pre-wrap"},a.text),
+          h("div",{className:"text-[11px] text-slate-400 mt-0.5"},(a.author?a.author+" · ":"")+when));
+      })):null);
+}
 function ManageTab(props){
-  var managers=props.managers,drivers=props.drivers,crews=props.crews||[],dayRates=props.dayRates||[],trucks=props.trucks||[],trailers=props.trailers||[],equipmentTypes=props.equipmentTypes||[],places=props.places||[],auditLog=props.auditLog||[],act=props.act,showToast=props.showToast;
+  var managers=props.managers,drivers=props.drivers,crews=props.crews||[],dayRates=props.dayRates||[],trucks=props.trucks||[],trailers=props.trailers||[],equipmentTypes=props.equipmentTypes||[],places=props.places||[],auditLog=props.auditLog||[],act=props.act,showToast=props.showToast,announcements=props.announcements||[],identity=props.identity||{};
   var s2=useState(""); var mName=s2[0]; var setMName=s2[1];
   var s3=useState(""); var mPhone=s3[0]; var setMPhone=s3[1];
   var s4=useState(""); var resetId=s4[0]; var setResetId=s4[1];
@@ -1388,6 +1575,10 @@ function ManageTab(props){
   }
   var people = managers.map(function(m){return {id:m.id,label:m.name+" (Manager)"};}).concat(drivers.map(function(d){return {id:d.id,label:d.name+" (Driver)"};}));
   return h("div",{className:"space-y-3 max-w-md"},
+    h(Section,{title:"🔔 Manager alerts"},
+      h(ManagerAlerts,null)),
+    h(Section,{title:"📢 Broadcast announcement",count:announcements.length},
+      h(BroadcastSection,{drivers:drivers,act:act,author:identity.name||"Dispatch",announcements:announcements})),
     h(Section,{title:"👤 Managers (who can assign)",count:managers.length},
       h("p",{className:"text-xs text-slate-500"},"These appear in the Manager sign-in list and the Assigned By dropdown."),
       managers.length>0?h("div",{className:"space-y-1.5"},managers.map(function(m){
@@ -1528,8 +1719,35 @@ function LocLine(props){
 }
 
 // ---- MyLoads ----
+function CommentThread(props){
+  var comments=props.comments||[];
+  return h("div",{className:"mt-2 border-t border-slate-100 pt-2"},
+    h("div",{className:"text-xs font-bold text-slate-600 mb-1.5"},"💬 Comments"+(comments.length?" ("+comments.length+")":"")),
+    comments.length?h("div",{className:"space-y-1.5 mb-2"},comments.slice(-8).map(function(c,i){
+      return h("div",{key:i,className:"text-xs"},
+        h("span",{className:"font-semibold "+(c.role==="manager"?"text-teal-700":"text-slate-700")},c.name||(c.role==="manager"?"Manager":"Driver")),
+        h("span",{className:"text-slate-400"}," · "+(c.at?fmtClock(c.at):"")),
+        h("div",{className:"text-slate-600 whitespace-pre-wrap"},c.text));
+    })):h("div",{className:"text-[11px] text-slate-400 mb-2"},"No comments yet."),
+    h("div",{className:"flex gap-2"},
+      h("input",{value:props.value||"",onChange:function(e){props.onChange(e.target.value);},onKeyDown:function(e){if(e.key==="Enter")props.onSend();},placeholder:"Add a comment…",className:"inp flex-1 text-sm"}),
+      h("button",{onClick:props.onSend,className:"bg-teal-600 text-white rounded-lg px-3 text-sm font-semibold shrink-0"},"Send")));
+}
 function MyLoads(props){
   var identity=props.identity,loads=props.loads,act=props.act,audit=props.audit||function(){},mutateLoad=props.mutateLoad||function(id,patch){return act(function(){return db.updateLoad(id,patch);});};
+  var meName=props.meName||"A driver";
+  var announcements=props.announcements||[];
+  function notifyMgr(title,body){try{db.notifyDriver({driverId:"mgr:ALL",title:title,body:body,url:"./",tag:"hhd-mgr-"+Date.now()});}catch(e){}}
+  var sCmt=useState({}); var cmtText=sCmt[0]; var setCmtText=sCmt[1];
+  var sAnnD=useState(0); var annD=sAnnD[0]; var setAnnD=sAnnD[1];
+  function addComment(l){
+    var t=(cmtText[l.id]||"").trim(); if(!t)return;
+    var comments=(l.comments||[]).concat([{by:identity.driverId,role:"driver",name:meName,text:t,at:Date.now()}]);
+    mutateLoad(l.id,{comments:comments},"Comment sent");
+    notifyMgr("💬 "+meName+" commented",t);
+    audit("Commented on load",fmtShort(l.date));
+    setCmtText(Object.assign({},cmtText,{[l.id]:""}));
+  }
   var s0=useState(null); var flagFor=s0[0]; var setFlagFor=s0[1];
   var s0b=useState(""); var flagNote=s0b[0]; var setFlagNote=s0b[1];
   var my=useMemo(function(){
@@ -1558,6 +1776,7 @@ function MyLoads(props){
   function submitFlag(type){
     var l=flagFor; if(!l)return;
     mutateLoad(l.id,{problem_type:type,problem_note:flagNote.trim()||null,problem_at:new Date().toISOString()},"Problem flagged — your manager is notified");
+    notifyMgr("⚠ Problem flagged by "+meName,type+(flagNote.trim()?" — "+flagNote.trim():"")+" · "+fmtMDY(l.date));
     audit("Flagged problem",type+(flagNote.trim()?" — "+flagNote.trim():""));
     setFlagFor(null);setFlagNote("");
   }
@@ -1594,6 +1813,10 @@ function MyLoads(props){
     }
     mutateLoad(l.id,patch);
     audit("Move "+statusInfo(newStatus).l,fmtShort(l.date));
+    if(ns==="completed"&&(l.status||"assigned")!=="completed"){
+      var route=(getMoves(l)[0]?(getMoves(l)[0].pickupPad||""):"")+" → "+(getMoves(l)[getMoves(l).length-1]?(getMoves(l)[getMoves(l).length-1].dropPad||""):"");
+      notifyMgr("✅ "+meName+" delivered a load",((mt(l.moveType)||{}).label||"")+" · "+route+" · "+fmtMDY(l.date));
+    }
   }
   function reopenLoad(l){
     var moves=getMoves(l).map(function(m){
@@ -1634,6 +1857,18 @@ function MyLoads(props){
           : h("button",{onClick:enableAlerts,className:"w-full bg-amber-50 border border-amber-200 text-amber-800 rounded-xl p-3 text-sm font-medium flex items-center justify-center gap-2"},
               notifPerm==="denied"?"🔔 Alerts are blocked — turn on notifications for this app in your phone settings":"🔔 Turn on alerts for new assignments"))
       : null,
+    (function(){
+      var latest=announcements&&announcements[0]; if(!latest)return null;
+      var seen=""; try{seen=localStorage.getItem("hhd_ann_seen")||"";}catch(e){}
+      if(seen===String(latest.id))return null;
+      var when=""; try{when=new Date(latest.at).toLocaleString([],{month:"numeric",day:"numeric",hour:"numeric",minute:"2-digit"});}catch(e){}
+      return h("div",{className:"bg-slate-900 text-white rounded-xl p-3 flex items-start gap-2"},
+        h("span",{className:"text-lg leading-none"},"📢"),
+        h("div",{className:"flex-1 min-w-0"},
+          h("div",{className:"text-sm font-medium",style:{whiteSpace:"pre-wrap"}},latest.text),
+          h("div",{className:"text-[11px] text-slate-400 mt-0.5"},(latest.author?latest.author+" · ":"")+when)),
+        h("button",{onClick:function(){try{localStorage.setItem("hhd_ann_seen",String(latest.id));}catch(e){}setAnnD(Date.now());},className:"text-slate-400 text-sm shrink-0 px-1"},"✕"));
+    })(),
     newCount>0?h("div",{className:"bg-teal-600 text-white rounded-xl p-3 flex items-center gap-2 text-sm font-medium"},"🔔 You have "+newCount+" new "+(newCount===1?"assignment":"assignments")+"."):null,
     h(TodaySummary,{loads:my}),
     h("h2",{className:"font-semibold text-slate-700"},"Active Loads · "+active.length),
@@ -1718,6 +1953,7 @@ function MyLoads(props){
             h("label",{className:"block w-full text-center border-2 border-dashed border-slate-300 rounded-xl py-2.5 text-sm font-medium text-slate-600 cursor-pointer"},
               uploadingId===l.id?"Uploading…":"📷 Add photo",
               h("input",{type:"file",accept:"image/*",capture:"environment",className:"hidden",disabled:uploadingId===l.id,onChange:function(e){addPhoto(l,e.target.files&&e.target.files[0]);}}))),
+          h(CommentThread,{comments:l.comments,value:cmtText[l.id]||"",onChange:function(v){setCmtText(Object.assign({},cmtText,{[l.id]:v}));},onSend:function(){addComment(l);}}),
           l.notes?h("div",{className:"text-xs text-slate-500 mt-2 bg-slate-50 rounded p-2 whitespace-pre-wrap"},l.notes):null);
       })),
     done.length>0?h(Fragment,null,
