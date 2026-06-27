@@ -224,10 +224,11 @@ function notify(title,body,opts){
 // Notification body listing the assignment details a driver needs at a glance.
 function loadNotifyBody(l){
   var lines=[];
-  var mtt=l.moveType?(schedInfo(l.moveType)||{}).label:"";
-  if(mtt)lines.push("Move Type: "+mtt);
   if(l.date)lines.push("Date: "+fmtMDY(l.date));
-  if(l.crewName)lines.push("Crew: "+l.crewName);
+  if(l.startFrom)lines.push("Start From: "+l.startFrom);
+  if(l.startTime)lines.push("Start Time: "+fmtTime(l.startTime));
+  var mtt=(mt(l.moveType)||{}).label||l.moveType||"";
+  if(mtt)lines.push("Move Type: "+mtt);
   if(l.assignedBy&&l.assignedBy.name)lines.push("Assigned By: "+l.assignedBy.name);
   return lines.join("\n");
 }
