@@ -326,6 +326,7 @@ var db = {
       sb.from("audit_log").select("*").order("at",{ascending:false}).limit(300),
       sb.from("push_subscriptions").select("driver_id"),
       sb.from("announcements").select("*").order("at",{ascending:false}).limit(30),
+      sb.from("conversations").select("*").order("last_at",{ascending:false}),
     ]);
     if(res[0].error) throw new Error("drivers: "+res[0].error.message);
     if(res[2].error) throw new Error("schedule: "+res[2].error.message);
@@ -346,10 +347,11 @@ var db = {
     var pushDriverIds=[]; var pushKnown=false;
     if(res[6]&&!res[6].error){pushKnown=true;(res[6].data||[]).forEach(function(r){if(r.driver_id&&pushDriverIds.indexOf(r.driver_id)===-1)pushDriverIds.push(r.driver_id);});}
     var announcements=(res[7]&&!res[7].error&&res[7].data)?res[7].data:[];
+    var conversations=(res[8]&&!res[8].error&&res[8].data)?res[8].data:[];
     return {
       drivers:res[0].data||[], managers:res[1].data||[],
       schedule:schedule, loads:(res[3].data||[]).map(rowToLoad), passwords:passwords, crews:crews, dayRates:dayRates, trucks:trucks, trailers:trailers, equipmentTypes:equipmentTypes, places:places,
-      auditLog:(res[5]&&res[5].data)||[], pushDriverIds:pushDriverIds, pushKnown:pushKnown, announcements:announcements
+      auditLog:(res[5]&&res[5].data)||[], pushDriverIds:pushDriverIds, pushKnown:pushKnown, announcements:announcements, conversations:conversations
     };
   },
   getPw: async function(id){
@@ -386,6 +388,10 @@ var db = {
   setPlaces:    function(arr){return sb.from("settings").upsert({key:"places",value:JSON.stringify(arr)});},
   savePushSub:  function(driverId,endpoint,p256dh,auth){return sb.from("push_subscriptions").upsert({driver_id:driverId,endpoint:endpoint,p256dh:p256dh,auth:auth},{onConflict:"endpoint"});},
   addAnnouncement: function(author,text){return sb.from("announcements").insert({author:author||"",text:text||""});},
+  chatMessages: function(convId){return sb.from("messages").select("*").eq("conversation_id",convId).order("at",{ascending:true});},
+  chatCreate:   function(row){return sb.from("conversations").insert(row).select();},
+  chatSend:     function(convId,msg){return sb.from("messages").insert(Object.assign({conversation_id:convId},msg));},
+  chatTouch:    function(convId,patch){return sb.from("conversations").update(patch).eq("id",convId);},
   notifyDriver: function(payload){
     function go(){return sb.functions.invoke("notify-driver",{body:payload}).then(function(r){if(r&&r.error)throw r.error;return r;});}
     try{return go().catch(function(){return go();}).catch(function(){});}catch(e){return Promise.resolve();}
@@ -491,8 +497,9 @@ function Modal(props){
       h("div",{className:"p-4"},props.children)));
 }
 function Tab(props){
-  return h("button",{onClick:props.on,className:"flex items-center gap-1.5 px-3 py-1.5 text-xs sm:text-sm font-semibold whitespace-nowrap rounded-lg "+(props.a?"bg-teal-500 text-white shadow-md shadow-teal-900/30":"text-slate-400 hover:text-slate-100 hover:bg-white/5")},
-    h("span",null,props.ic)," ",props.l);
+  return h("button",{onClick:props.on,className:"relative flex items-center gap-1.5 px-3 py-1.5 text-xs sm:text-sm font-semibold whitespace-nowrap rounded-lg "+(props.a?"bg-teal-500 text-white shadow-md shadow-teal-900/30":"text-slate-400 hover:text-slate-100 hover:bg-white/5")},
+    h("span",null,props.ic)," ",props.l,
+    (props.badge>0)?h("span",{className:"ml-0.5 bg-amber-400 text-slate-900 text-[10px] font-bold rounded-full min-w-[16px] h-4 px-1 inline-flex items-center justify-center"},props.badge>9?"9+":props.badge):null);
 }
 
 function SetupScreen(){
@@ -618,6 +625,7 @@ function App(){
   var s22=useState([]); var pushIds=s22[0]; var setPushIds=s22[1];
   var s23=useState(false); var pushKnown=s23[0]; var setPushKnown=s23[1];
   var s24=useState(function(){return C0.announcements||[];}); var announcements=s24[0]; var setAnnouncements=s24[1];
+  var s25=useState(function(){return C0.conversations||[];}); var conversations=s25[0]; var setConversations=s25[1];
   function toggleCab(){var v=!cabMode;setCabMode(v);try{localStorage.setItem("hhd_cab",v?"1":"0");}catch(e){}}
 
   function showToast(m){setToast(m);setTimeout(function(){setToast("");},1800);}
@@ -658,8 +666,9 @@ function App(){
       setPasswords(d.passwords); setCrews(d.crews||[]); setDayRates(d.dayRates||[]); setTrucks(d.trucks||[]); setTrailers(d.trailers||[]); setAuditLog(d.auditLog||[]); setEquipmentTypes(d.equipmentTypes||[]); setPlaces(d.places||[]); setDbError("");
       if(d.pushKnown){setPushIds(d.pushDriverIds||[]);setPushKnown(true);}
       setAnnouncements(d.announcements||[]);
+      setConversations(d.conversations||[]);
       setOnline(true); everLoaded.current=true;
-      writeCache({drivers:d.drivers,managers:d.managers,schedule:d.schedule,loads:d.loads,crews:d.crews||[],dayRates:d.dayRates||[],trucks:d.trucks||[],trailers:d.trailers||[],equipmentTypes:d.equipmentTypes||[],places:d.places||[],auditLog:d.auditLog||[],announcements:d.announcements||[]});
+      writeCache({drivers:d.drivers,managers:d.managers,schedule:d.schedule,loads:d.loads,crews:d.crews||[],dayRates:d.dayRates||[],trucks:d.trucks||[],trailers:d.trailers||[],equipmentTypes:d.equipmentTypes||[],places:d.places||[],auditLog:d.auditLog||[],announcements:d.announcements||[],conversations:d.conversations||[]});
       drainOutbox();
     }catch(e){
       setOnline(false);
@@ -736,6 +745,15 @@ function App(){
   if(!identity) return h(SignIn,{drivers:drivers,managers:managers,passwords:passwords,onSignIn:signIn});
 
   var isDispatch=identity.role==="dispatch";
+  var meId=identity.driverId||identity.id||null;
+  var meRole=isDispatch?"manager":"driver";
+  var meName=identity.name||(isDispatch?"Manager":driverName(identity.driverId));
+  var myConvs=(conversations||[]).filter(function(c){var ids=c.member_ids||[];return meId&&ids.indexOf(meId)!==-1;});
+  var chatUnread=myConvs.filter(function(c){
+    if(!c.last_at||c.last_sender===meId)return false;
+    var seen=0; try{seen=parseInt(localStorage.getItem("hhd_chat_read:"+c.id)||"0",10)||0;}catch(e){}
+    return Date.parse(c.last_at)>seen;
+  }).length;
   var cabOn=!isDispatch&&cabMode;
   return h("div",{className:"min-h-screen text-slate-800"+(cabOn?" cab":"")},
     h("header",{className:"bg-gradient-to-b from-slate-900 to-slate-800 text-white sticky top-0 z-30 shadow-lg",style:{paddingTop:"env(safe-area-inset-top)"}},
@@ -757,10 +775,12 @@ function App(){
           h(Tab,{a:view==="schedule",on:function(){setView("schedule");},ic:"📅",l:"Schedule"}),
           h(Tab,{a:view==="dayrate",on:function(){setView("dayrate");},ic:"💲",l:"Day Rate"}),
           h(Tab,{a:view==="drivers",on:function(){setView("drivers");},ic:"👥",l:"Drivers"}),
+          h(Tab,{a:view==="chat",on:function(){setView("chat");},ic:"💬",l:"Chat",badge:chatUnread}),
           h(Tab,{a:view==="manage",on:function(){setView("manage");},ic:"⚙️",l:"Manage"}))
         :h(Fragment,null,
           h(Tab,{a:view==="myloads",on:function(){setView("myloads");},ic:"📋",l:"My Loads"}),
-          h(Tab,{a:view==="myschedule",on:function(){setView("myschedule");},ic:"📅",l:"My Schedule"})))),
+          h(Tab,{a:view==="myschedule",on:function(){setView("myschedule");},ic:"📅",l:"My Schedule"}),
+          h(Tab,{a:view==="chat",on:function(){setView("chat");},ic:"💬",l:"Chat",badge:chatUnread})))),
     (!online||pending.length>0)?h("div",{className:(!online?"bg-amber-500":"bg-teal-600")+" text-white text-center text-xs font-semibold py-1.5 px-3"},
       !online
         ?("📴 Offline — showing last synced data"+(pending.length>0?" · "+pending.length+" change"+(pending.length!==1?"s":"")+" will sync when you're back online":""))
@@ -773,7 +793,8 @@ function App(){
       isDispatch&&view==="drivers"&&h(DriversTab,{drivers:drivers,act:act}),
       isDispatch&&view==="manage"&&h(ManageTab,{managers:managers,drivers:drivers,crews:crews,dayRates:dayRates,trucks:trucks,trailers:trailers,equipmentTypes:equipmentTypes,places:places,auditLog:auditLog,announcements:announcements,identity:identity,act:act,showToast:showToast}),
       !isDispatch&&view==="myloads"&&h(MyLoads,{identity:identity,loads:loads,act:act,audit:audit,mutateLoad:mutateLoad,meName:driverName(identity.driverId),announcements:announcements}),
-      !isDispatch&&view==="myschedule"&&h(MySchedule,{identity:identity,schedule:schedule,act:act})),
+      !isDispatch&&view==="myschedule"&&h(MySchedule,{identity:identity,schedule:schedule,act:act}),
+      view==="chat"&&h(ChatTab,{drivers:drivers,managers:managers,conversations:myConvs,meId:meId,meName:meName,meRole:meRole,online:online,loads:loads})),
     toast&&h("div",{className:"fixed bottom-5 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-sm font-medium px-4 py-2.5 rounded-xl shadow-lg z-50 border border-white/10 max-w-[90vw] text-center"},toast));
 }
 
@@ -1790,6 +1811,157 @@ function LocLine(props){
 }
 
 // ---- MyLoads ----
+function chatInitials(n){return (n||"?").split(/\s+/).map(function(w){return w[0];}).slice(0,2).join("").toUpperCase();}
+function chatTime(at){try{return new Date(at).toLocaleTimeString([],{hour:"numeric",minute:"2-digit"});}catch(e){return "";}}
+function chatDay(at){try{var d=new Date(at),t=new Date();if(d.toDateString()===t.toDateString())return "Today";return d.toLocaleDateString([],{weekday:"short",month:"short",day:"numeric"});}catch(e){return "";}}
+function ChatTab(props){
+  var drivers=props.drivers||[],managers=props.managers||[],conversations=props.conversations||[],meId=props.meId,meName=props.meName||"Me",meRole=props.meRole||"driver",online=props.online!==false;
+  var a1=useState(null); var active=a1[0]; var setActive=a1[1];
+  var a2=useState([]); var msgs=a2[0]; var setMsgs=a2[1];
+  var a3=useState(""); var text=a3[0]; var setText=a3[1];
+  var a4=useState(false); var newMode=a4[0]; var setNewMode=a4[1];
+  var a5=useState({}); var sel=a5[0]; var setSel=a5[1];
+  var a6=useState(""); var gtitle=a6[0]; var setGtitle=a6[1];
+  var a7=useState(false); var sending=a7[0]; var setSending=a7[1];
+  var endRef=useRef(null);
+  var people=drivers.map(function(d){return {id:d.id,name:d.name,role:"driver"};})
+    .concat(managers.map(function(m){return {id:m.id,name:m.name,role:"manager"};}))
+    .filter(function(p){return p.id&&p.id!==meId;});
+  function convName(c){
+    if(c.is_group)return c.title||(c.members||[]).filter(function(m){return m.id!==meId;}).map(function(m){return m.name;}).join(", ")||"Group";
+    var other=(c.members||[]).filter(function(m){return m.id!==meId;})[0];
+    return other?other.name:"Chat";
+  }
+  function markRead(c){try{localStorage.setItem("hhd_chat_read:"+c.id,String(Date.now()));}catch(e){}}
+  function unread(c){if(!c.last_at||c.last_sender===meId)return false;var seen=0;try{seen=parseInt(localStorage.getItem("hhd_chat_read:"+c.id)||"0",10)||0;}catch(e){}return Date.parse(c.last_at)>seen;}
+  function fetchMsgs(cid){Promise.resolve(db.chatMessages(cid)).then(function(r){if(r&&r.data)setMsgs(r.data);}).catch(function(){});}
+  function open(c){setActive(c);markRead(c);setMsgs([]);fetchMsgs(c.id);}
+  useEffect(function(){
+    if(!active)return;
+    fetchMsgs(active.id);
+    var t=setInterval(function(){fetchMsgs(active.id);markRead(active);},4000);
+    return function(){clearInterval(t);};
+  },[active&&active.id]);
+  useEffect(function(){try{if(endRef.current&&endRef.current.scrollIntoView)endRef.current.scrollIntoView({block:"end"});}catch(e){}},[msgs.length,active&&active.id]);
+  function notifyFor(conv,t){
+    var others=(conv.members||[]).filter(function(m){return m.id!==meId;});
+    var title="💬 "+meName+(conv.is_group&&conv.title?(" · "+conv.title):"");
+    var pingedMgr=false;
+    others.forEach(function(m){
+      if(m.role==="driver"){try{db.notifyDriver({driverId:m.id,title:title,body:t,url:"./",tag:"hhd-chat-"+conv.id});}catch(e){}}
+      else if(meRole==="driver"&&!pingedMgr){try{db.notifyDriver({driverId:"mgr:ALL",title:title,body:t,url:"./",tag:"hhd-chat-"+conv.id});}catch(e){}pingedMgr=true;}
+    });
+  }
+  function send(){
+    var t=text.trim(); if(!t||!active||!online||sending)return;
+    setSending(true);
+    var optimistic={id:"tmp-"+Date.now(),sender_id:meId,sender_name:meName,sender_role:meRole,text:t,at:new Date().toISOString()};
+    setMsgs(function(prev){return prev.concat([optimistic]);});
+    setText("");
+    var nowIso=new Date().toISOString();
+    Promise.resolve(db.chatSend(active.id,{sender_id:meId,sender_name:meName,sender_role:meRole,text:t}))
+      .then(function(){return db.chatTouch(active.id,{last_at:nowIso,last_text:t,last_sender:meId});})
+      .then(function(){notifyFor(active,t);markRead(active);fetchMsgs(active.id);})
+      .catch(function(){})
+      .then(function(){setSending(false);});
+  }
+  function toggleSel(id){setSel(function(p){var n=Object.assign({},p);if(n[id])delete n[id];else n[id]=true;return n;});}
+  function startChat(){
+    var chosen=people.filter(function(p){return sel[p.id];});
+    if(chosen.length===0)return;
+    var members=[{id:meId,name:meName,role:meRole}].concat(chosen.map(function(p){return {id:p.id,name:p.name,role:p.role};}));
+    var member_ids=members.map(function(m){return m.id;});
+    var isGroup=members.length>2;
+    if(!isGroup){
+      var key=member_ids.slice().sort().join("|");
+      var existing=conversations.find(function(c){return !c.is_group&&(c.member_ids||[]).slice().sort().join("|")===key;});
+      if(existing){setNewMode(false);setSel({});setGtitle("");open(existing);return;}
+    }
+    var row={title:isGroup?(gtitle.trim()||""):"",is_group:isGroup,members:members,member_ids:member_ids,created_by:meId,last_at:new Date().toISOString(),last_text:"",last_sender:""};
+    Promise.resolve(db.chatCreate(row)).then(function(r){
+      var c=(r&&r.data&&r.data[0])?r.data[0]:null;
+      setNewMode(false);setSel({});setGtitle("");
+      if(c)open(c);
+    }).catch(function(){setNewMode(false);});
+  }
+
+  if(!meId)return h("div",{className:"bg-white rounded-xl p-4 shadow-sm text-sm text-slate-500"},"To use chat, sign in by selecting your name from the Manager list (the generic \"Continue as Manager\" option can't be messaged).");
+
+  if(active){
+    return h("div",{className:"flex flex-col",style:{height:"calc(100vh - 175px)"}},
+      h("div",{className:"flex items-center gap-2 pb-2 border-b border-slate-200"},
+        h("button",{onClick:function(){setActive(null);},className:"text-slate-500 text-sm px-1 font-medium"},"‹ Back"),
+        h("div",{className:"w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold "+(active.is_group?"bg-amber-100 text-amber-700":"bg-teal-100 text-teal-700")},active.is_group?"👥":chatInitials(convName(active))),
+        h("div",{className:"min-w-0"},
+          h("div",{className:"font-semibold text-slate-800 truncate"},convName(active)),
+          active.is_group?h("div",{className:"text-[11px] text-slate-400 truncate"},(active.members||[]).map(function(m){return m.id===meId?"You":m.name;}).join(", ")):null)),
+      h("div",{className:"flex-1 overflow-y-auto py-3 space-y-1.5"},
+        msgs.length===0?h("div",{className:"text-center text-sm text-slate-400 py-6"},"No messages yet. Say hello 👋"):
+        msgs.map(function(m,i){
+          var mine=m.sender_id===meId;
+          var prev=msgs[i-1];
+          var showDay=!prev||(function(){try{return new Date(prev.at).toDateString()!==new Date(m.at).toDateString();}catch(e){return false;}})();
+          return h(Fragment,{key:m.id||i},
+            showDay?h("div",{className:"text-center text-[11px] text-slate-400 my-1.5"},chatDay(m.at)):null,
+            h("div",{className:"flex "+(mine?"justify-end":"justify-start")},
+              h("div",{className:"max-w-[80%]"},
+                (!mine&&active.is_group)?h("div",{className:"text-[11px] text-slate-500 mb-0.5 ml-1 font-medium"},m.sender_name||"Someone"):null,
+                h("div",{className:(mine?"bg-teal-600 text-white":"bg-white text-slate-800 border border-slate-200")+" rounded-2xl px-3 py-2 text-sm whitespace-pre-wrap break-words shadow-sm"},m.text),
+                h("div",{className:"text-[10px] text-slate-400 mt-0.5 "+(mine?"text-right mr-1":"ml-1")},chatTime(m.at)))));
+        }),
+        h("div",{ref:endRef})),
+      h("div",{className:"pt-2 border-t border-slate-200"},
+        !online?h("div",{className:"text-[11px] text-amber-600 mb-1"},"You're offline — reconnect to send."):null,
+        h("div",{className:"flex gap-2 items-end"},
+          h("textarea",{value:text,onChange:function(e){setText(e.target.value);},onKeyDown:function(e){if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();send();}},rows:1,placeholder:"Message…",className:"inp flex-1 resize-none",disabled:!online}),
+          h("button",{onClick:send,disabled:!text.trim()||!online||sending,className:"bg-teal-600 disabled:opacity-40 text-white rounded-xl px-4 py-2.5 text-sm font-semibold shrink-0"},"Send"))));
+  }
+
+  if(newMode){
+    var chosenCount=people.filter(function(p){return sel[p.id];}).length;
+    return h("div",{className:"space-y-3"},
+      h("div",{className:"flex items-center gap-2"},
+        h("button",{onClick:function(){setNewMode(false);setSel({});setGtitle("");},className:"text-slate-500 text-sm font-medium"},"‹ Back"),
+        h("h2",{className:"font-bold text-slate-800"},"New chat")),
+      h("p",{className:"text-xs text-slate-500"},"Pick one person for a direct message, or several to start a group (e.g. everyone on a move)."),
+      chosenCount>1?h("input",{value:gtitle,onChange:function(e){setGtitle(e.target.value);},placeholder:"Group name (optional, e.g. Pad 7 move)",className:"inp"}):null,
+      h("div",{className:"space-y-1.5 max-h-[52vh] overflow-y-auto"},
+        people.length===0?h(Empty,{msg:"No one else to chat with yet."}):
+        ["manager","driver"].map(function(role){
+          var grp=people.filter(function(p){return p.role===role;});
+          if(grp.length===0)return null;
+          return h("div",{key:role},
+            h("div",{className:"text-[11px] font-bold text-slate-400 uppercase px-1 mt-1 mb-1"},role==="manager"?"Managers":"Drivers"),
+            h("div",{className:"space-y-1.5"},grp.map(function(p){
+              var on=!!sel[p.id];
+              return h("button",{key:p.id,onClick:function(){toggleSel(p.id);},className:"w-full flex items-center gap-2 rounded-xl px-3 py-2 text-left "+(on?"bg-teal-50 border border-teal-300":"bg-white border border-slate-200")},
+                h("div",{className:"w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold "+(p.role==="manager"?"bg-teal-100 text-teal-700":"bg-slate-100 text-slate-600")},chatInitials(p.name)),
+                h("span",{className:"flex-1 text-sm font-medium text-slate-800"},p.name),
+                h("span",{className:"w-5 h-5 rounded-full border-2 flex items-center justify-center text-[10px] "+(on?"bg-teal-600 border-teal-600 text-white":"border-slate-300")},on?"✓":""));
+            })));
+        })),
+      h("button",{onClick:startChat,disabled:chosenCount===0,className:"w-full bg-teal-600 disabled:opacity-40 text-white rounded-xl py-2.5 font-semibold"},chosenCount>1?("Start group ("+chosenCount+")"):chosenCount===1?"Start chat":"Select people"));
+  }
+
+  return h("div",{className:"space-y-3"},
+    h("div",{className:"flex items-center gap-2"},
+      h("h2",{className:"font-bold text-slate-800 flex-1"},"Chat"),
+      h("button",{onClick:function(){setNewMode(true);},className:"bg-teal-600 text-white rounded-lg px-3 py-1.5 text-sm font-semibold"},"＋ New chat")),
+    conversations.length===0?h(Empty,{msg:"No conversations yet. Tap New chat to message someone."}):
+    h("div",{className:"space-y-2"},
+      conversations.map(function(c){
+        var un=unread(c);
+        return h("button",{key:c.id,onClick:function(){open(c);},className:"w-full flex items-center gap-3 bg-white rounded-xl p-3 shadow-sm text-left"},
+          h("div",{className:"w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold shrink-0 "+(c.is_group?"bg-amber-100 text-amber-700":"bg-teal-100 text-teal-700")},c.is_group?"👥":chatInitials(convName(c))),
+          h("div",{className:"flex-1 min-w-0"},
+            h("div",{className:"flex items-center gap-2"},
+              h("span",{className:"font-semibold text-slate-800 truncate flex-1"},convName(c)),
+              c.last_at?h("span",{className:"text-[11px] text-slate-400 shrink-0"},chatTime(c.last_at)):null),
+            h("div",{className:"flex items-center gap-2"},
+              h("span",{className:"text-xs truncate flex-1 "+(un?"text-slate-800 font-semibold":"text-slate-500")},(c.last_sender===meId?"You: ":"")+(c.last_text||"No messages yet")),
+              un?h("span",{className:"w-2.5 h-2.5 rounded-full bg-amber-400 shrink-0"}):null)));
+      })));
+}
 function CommentThread(props){
   var comments=props.comments||[];
   return h("div",{className:"mt-2 border-t border-slate-100 pt-2"},
