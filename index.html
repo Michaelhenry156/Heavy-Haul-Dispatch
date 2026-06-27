@@ -1836,6 +1836,7 @@ function LocLine(props){
 function chatInitials(n){return (n||"?").split(/\s+/).map(function(w){return w[0];}).slice(0,2).join("").toUpperCase();}
 function chatTime(at){try{return new Date(at).toLocaleTimeString([],{hour:"numeric",minute:"2-digit"});}catch(e){return "";}}
 function chatDay(at){try{var d=new Date(at),t=new Date();if(d.toDateString()===t.toDateString())return "Today";return d.toLocaleDateString([],{weekday:"short",month:"short",day:"numeric"});}catch(e){return "";}}
+function chatWhen(at){var d=chatDay(at),t=chatTime(at);return (d?d+" ":"")+t;}
 function ChatTab(props){
   var drivers=props.drivers||[],managers=props.managers||[],conversations=props.conversations||[],meId=props.meId,meName=props.meName||"Me",meRole=props.meRole||"driver",online=props.online!==false;
   var a1=useState(null); var active=a1[0]; var setActive=a1[1];
@@ -1848,6 +1849,7 @@ function ChatTab(props){
   var a8=useState({}); var reads=a8[0]; var setReads=a8[1];
   var a9=useState({}); var delivered=a9[0]; var setDelivered=a9[1];
   var a10=useState([]); var hidden=a10[0]; var setHidden=a10[1];
+  var a11=useState(null); var infoMsg=a11[0]; var setInfoMsg=a11[1];
   var endRef=useRef(null);
   var people=drivers.map(function(d){return {id:d.id,name:d.name,role:"driver"};})
     .concat(managers.map(function(m){return {id:m.id,name:m.name,role:"manager"};}))
@@ -1953,11 +1955,21 @@ function ChatTab(props){
     var pending=String(msg.id||"").indexOf("tmp-")===0;
     return {label:pending?"Sending…":"Sent",time:pending?null:msg.at,cls:"text-slate-400"};
   }
+  function memberStatus(msg){
+    var mAt=Date.parse(msg.at);
+    return (active&&active.members||[]).filter(function(m){return m.id!==meId;}).map(function(m){
+      var rt=reads[m.id]?Date.parse(reads[m.id]):0, dt=delivered[m.id]?Date.parse(delivered[m.id]):0;
+      if(rt>=mAt)return {m:m,state:"read",time:reads[m.id]};
+      if(dt>=mAt)return {m:m,state:"delivered",time:delivered[m.id]};
+      return {m:m,state:"sent",time:null};
+    }).sort(function(a,b){var o={read:0,delivered:1,sent:2};return (o[a.state]-o[b.state])||a.m.name.localeCompare(b.m.name);});
+  }
 
   if(!meId)return h("div",{className:"bg-white rounded-xl p-4 shadow-sm text-sm text-slate-500"},"To use chat, sign in by selecting your name from the Manager list (the generic \"Continue as Manager\" option can't be messaged).");
 
   if(active){
-    return h("div",{className:"flex flex-col",style:{height:"calc(100vh - 175px)"}},
+    return h(Fragment,null,
+    h("div",{className:"flex flex-col",style:{height:"calc(100vh - 175px)"}},
       h("div",{className:"flex items-center gap-2 pb-2 border-b border-slate-200"},
         h("button",{onClick:function(){setActive(null);},className:"text-slate-500 text-sm px-1 font-medium"},"‹ Back"),
         h("div",{className:"w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold "+(active.is_group?"bg-amber-100 text-amber-700":"bg-teal-100 text-teal-700")},active.is_group?"👥":chatInitials(convName(active))),
@@ -1978,9 +1990,9 @@ function ChatTab(props){
             h("div",{className:"flex "+(mine?"justify-end":"justify-start")},
               h("div",{className:"max-w-[80%]"},
                 (!mine&&active.is_group)?h("div",{className:"text-[11px] text-slate-500 mb-0.5 ml-1 font-medium"},m.sender_name||"Someone"):null,
-                h("div",{className:(mine?"bg-teal-600 text-white":"bg-white text-slate-800 border border-slate-200")+" rounded-2xl px-3 py-2 text-sm whitespace-pre-wrap break-words shadow-sm"},m.text),
+                h("div",{onClick:mine?function(){setInfoMsg(m);}:null,className:(mine?"bg-teal-600 text-white cursor-pointer":"bg-white text-slate-800 border border-slate-200")+" rounded-2xl px-3 py-2 text-sm whitespace-pre-wrap break-words shadow-sm",title:mine?"Tap to see who's received and read it":null},m.text),
                 st
-                  ?h("div",{className:"text-[10px] mt-0.5 text-right mr-1 font-medium "+st.cls},st.label+(st.time?" "+chatTime(st.time):""))
+                  ?h("button",{onClick:function(){setInfoMsg(m);},className:"text-[10px] mt-0.5 text-right mr-1 font-medium "+st.cls},st.label+(st.time?" "+chatTime(st.time):"")+(active.is_group?" ›":""))
                   :h("div",{className:"text-[10px] text-slate-400 mt-0.5 "+(mine?"text-right mr-1":"ml-1")},chatTime(m.at)))));
         });})(),
         h("div",{ref:endRef})),
@@ -1988,7 +2000,18 @@ function ChatTab(props){
         !online?h("div",{className:"text-[11px] text-amber-600 mb-1"},"You're offline — reconnect to send."):null,
         h("div",{className:"flex gap-2 items-end"},
           h("textarea",{value:text,onChange:function(e){setText(e.target.value);},onKeyDown:function(e){if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();send();}},rows:1,placeholder:"Message…",className:"inp flex-1 resize-none",disabled:!online}),
-          h("button",{onClick:send,disabled:!text.trim()||!online||sending,className:"bg-teal-600 disabled:opacity-40 text-white rounded-xl px-4 py-2.5 text-sm font-semibold shrink-0"},"Send"))));
+          h("button",{onClick:send,disabled:!text.trim()||!online||sending,className:"bg-teal-600 disabled:opacity-40 text-white rounded-xl px-4 py-2.5 text-sm font-semibold shrink-0"},"Send")))),
+    infoMsg&&h(Modal,{title:"Message info",onClose:function(){setInfoMsg(null);}},
+      h("div",{className:"bg-slate-50 rounded-lg p-2.5 text-sm text-slate-700 mb-3 whitespace-pre-wrap break-words"},infoMsg.text),
+      h("div",{className:"space-y-2 max-h-[55vh] overflow-y-auto"},
+        memberStatus(infoMsg).map(function(s){
+          return h("div",{key:s.m.id,className:"flex items-center gap-2.5"},
+            h("div",{className:"w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold shrink-0 "+(s.m.role==="manager"?"bg-teal-100 text-teal-700":"bg-slate-100 text-slate-600")},chatInitials(s.m.name)),
+            h("div",{className:"flex-1 min-w-0"},
+              h("div",{className:"text-sm font-medium text-slate-800 truncate"},s.m.name),
+              h("div",{className:"text-xs "+(s.state==="read"?"text-teal-600 font-medium":"text-slate-400")},
+                s.state==="read"?("✓✓ Read · "+chatWhen(s.time)):s.state==="delivered"?("✓ Delivered · "+chatWhen(s.time)):"Not delivered yet")));
+        }))));
   }
 
   if(newMode){
