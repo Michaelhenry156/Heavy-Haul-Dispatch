@@ -1490,19 +1490,86 @@ function DriverForm(props){
 // ---- ManageTab ----
 function Section(props){
   var s=useState(!!props.open); var open=s[0]; var setOpen=s[1];
+  var ao=!!props.alwaysOpen;
   return h("div",{className:"bg-white rounded-xl shadow-sm overflow-hidden "+(props.danger?"border border-red-100":"")},
-    h("button",{onClick:function(){setOpen(!open);},className:"w-full flex items-center gap-2 p-4 text-left"},
-      h("h3",{className:"font-semibold flex-1 "+(props.danger?"text-red-600":"text-slate-700")},props.title),
-      (props.count!=null&&props.count!=="")?h("span",{className:"text-xs text-slate-500 bg-slate-100 rounded-full px-2 py-0.5 font-medium"},props.count):null,
-      h("span",{className:"text-xs font-semibold text-teal-700"},open?"Hide":"View All"),
-      h("span",{className:"text-slate-400 text-[10px]"},open?"▲":"▼")),
-    open?h("div",{className:"px-4 pb-4 space-y-3"},props.children):null);
+    ao
+      ? h("div",{className:"w-full flex items-center gap-2 p-4"},
+          h("h3",{className:"font-semibold flex-1 "+(props.danger?"text-red-600":"text-slate-700")},props.title),
+          (props.count!=null&&props.count!=="")?h("span",{className:"text-xs text-slate-500 bg-slate-100 rounded-full px-2 py-0.5 font-medium"},props.count):null)
+      : h("button",{onClick:function(){setOpen(!open);},className:"w-full flex items-center gap-2 p-4 text-left"},
+          h("h3",{className:"font-semibold flex-1 "+(props.danger?"text-red-600":"text-slate-700")},props.title),
+          (props.count!=null&&props.count!=="")?h("span",{className:"text-xs text-slate-500 bg-slate-100 rounded-full px-2 py-0.5 font-medium"},props.count):null,
+          h("span",{className:"text-xs font-semibold text-teal-700"},open?"Hide":"View All"),
+          h("span",{className:"text-slate-400 text-[10px]"},open?"▲":"▼")),
+    (ao||open)?h("div",{className:"px-4 pb-4 space-y-3"},props.children):null);
+}
+function SortableSections(props){
+  var items=props.items||[]; var storageKey=props.storageKey||"hhd_section_order";
+  var defKeys=items.map(function(i){return i.key;});
+  var s=useState(function(){
+    var saved=null; try{saved=JSON.parse(localStorage.getItem(storageKey)||"null");}catch(e){}
+    var known={}; defKeys.forEach(function(k){known[k]=true;});
+    var ord=(Array.isArray(saved)?saved:[]).filter(function(k){return known[k];});
+    defKeys.forEach(function(k){if(ord.indexOf(k)===-1)ord.push(k);});
+    return ord;
+  });
+  var order=s[0],setOrder=s[1];
+  var d=useState(null); var dragKey=d[0]; var setDragKey=d[1];
+  var dref=useRef(null); var wraps=useRef({});
+  var byKey={}; items.forEach(function(i){byKey[i.key]=i;});
+  var validOrder=order.filter(function(k){return byKey[k];});
+  defKeys.forEach(function(k){if(validOrder.indexOf(k)===-1)validOrder.push(k);});
+  function persist(o){try{localStorage.setItem(storageKey,JSON.stringify(o));}catch(e){}}
+  function recompute(y){
+    var dk=dref.current; if(!dk)return;
+    var without=validOrder.filter(function(k){return k!==dk;});
+    var ins=without.length;
+    for(var j=0;j<without.length;j++){
+      var n=wraps.current[without[j]]; if(!n)continue;
+      var r=n.getBoundingClientRect();
+      if(y<r.top+r.height/2){ins=j;break;}
+    }
+    without.splice(ins,0,dk);
+    if(without.join("|")!==validOrder.join("|"))setOrder(without);
+  }
+  useEffect(function(){
+    if(!dragKey)return;
+    function mv(e){var y=(e.touches&&e.touches[0])?e.touches[0].clientY:e.clientY; if(e.cancelable)e.preventDefault(); recompute(y);}
+    function up(){dref.current=null;setDragKey(null);persist(validOrder);}
+    window.addEventListener("pointermove",mv,{passive:false});
+    window.addEventListener("pointerup",up);
+    window.addEventListener("pointercancel",up);
+    return function(){window.removeEventListener("pointermove",mv);window.removeEventListener("pointerup",up);window.removeEventListener("pointercancel",up);};
+  },[dragKey,validOrder.join("|")]);
+  function start(key){return function(e){dref.current=key;setDragKey(key);};}
+  return h("div",{className:"space-y-3"},
+    h("p",{className:"text-[11px] text-slate-400 px-1"},"Drag the ≡ handle to reorder these sections — your layout is saved on this device."),
+    validOrder.map(function(key){
+      var it=byKey[key]; if(!it)return null;
+      return h("div",{key:key,ref:function(el){if(el)wraps.current[key]=el;},className:"flex items-stretch gap-1.5 "+(dragKey===key?"opacity-60":"")},
+        h("div",{onPointerDown:start(key),title:"Drag to reorder",style:{touchAction:"none",cursor:"grab"},className:"shrink-0 flex items-center justify-center w-8 rounded-xl bg-slate-100 text-slate-400 text-lg select-none active:bg-slate-200"},"≡"),
+        h("div",{className:"flex-1 min-w-0"},it.node));
+    }));
 }
 function ManagerAlerts(){
   var n1=useState(("Notification"in window)?Notification.permission:"unsupported"); var perm=n1[0]; var setPerm=n1[1];
   var n2=useState(""); var st=n2[0]; var setSt=n2[1];
-  useEffect(function(){if(perm==="granted"){setSt(function(s){return s||"working";});subscribeToPush("mgr:ALL").then(function(r){setSt(r&&r.ok?"ready":"failed");});}},[perm]);
-  function enable(){if(!("Notification"in window))return;setSt("working");Notification.requestPermission().then(function(p){setPerm(p);if(p==="granted"){subscribeToPush("mgr:ALL").then(function(r){setSt(r&&r.ok?"ready":"failed");});}else setSt("");});}
+  var n3=useState(""); var why=n3[0]; var setWhy=n3[1];
+  var tried=useRef(false);
+  function doSub(){
+    setSt("working");
+    subscribeToPush("mgr:ALL").then(function(r){
+      if(r&&r.ok){setSt("ready");setWhy("");}
+      else{setSt("failed");setWhy((r&&r.reason)||"error");}
+    });
+  }
+  useEffect(function(){ if(perm==="granted"&&!tried.current){tried.current=true;doSub();} },[perm]);
+  function enable(){
+    if(!("Notification"in window))return;
+    if(Notification.permission==="granted"){tried.current=true;doSub();return;}
+    setSt("working");
+    Notification.requestPermission().then(function(p){setPerm(p);if(p==="granted"){tried.current=true;doSub();}else setSt("");});
+  }
   function test(){notify("Manager alert test ✅","You'll be alerted here when a driver flags a problem or delivers a load.",{url:"./"});}
   return h("div",null,
     h("p",{className:"text-xs text-slate-500 mb-2"},"Get a push notification when any driver flags a problem or marks a load delivered. Turn this on once per device you want alerts on."),
@@ -1510,7 +1577,9 @@ function ManagerAlerts(){
     perm==="granted"
       ? (st==="ready"?h("button",{onClick:test,className:"w-full bg-teal-50 border border-teal-200 text-teal-800 rounded-xl p-2.5 text-sm font-medium"},"🔔 Manager alerts are on — tap to send a test")
         : st==="working"?h("div",{className:"w-full bg-slate-50 border border-slate-200 text-slate-500 rounded-xl p-2.5 text-sm text-center"},"🔔 Finishing setup…")
-        : h("button",{onClick:enable,className:"w-full bg-amber-50 border border-amber-200 text-amber-800 rounded-xl p-3 text-sm font-medium"},"🔔 Couldn't finish setup — tap to retry"))
+        : h(Fragment,null,
+            h("button",{onClick:enable,className:"w-full bg-amber-50 border border-amber-200 text-amber-800 rounded-xl p-3 text-sm font-medium"},"🔔 Couldn't finish setup — tap to retry"),
+            why?h("p",{className:"text-[11px] text-slate-400 mt-1"},why==="save-failed"?"Couldn't save the subscription — the push_subscriptions table needs the one-time SQL fix (see the file included with this update), then retry.":("Reason: "+why)):null))
       : h("button",{onClick:enable,className:"w-full bg-amber-50 border border-amber-200 text-amber-800 rounded-xl p-3 text-sm font-medium"},
           perm==="denied"?"🔔 Blocked — enable notifications for this app in your phone/browser settings":"🔔 Turn on manager alerts"));
 }
@@ -1574,12 +1643,12 @@ function ManageTab(props){
     setRateInput("");
   }
   var people = managers.map(function(m){return {id:m.id,label:m.name+" (Manager)"};}).concat(drivers.map(function(d){return {id:d.id,label:d.name+" (Driver)"};}));
-  return h("div",{className:"space-y-3 max-w-md"},
-    h(Section,{title:"🔔 Manager alerts"},
-      h(ManagerAlerts,null)),
-    h(Section,{title:"📢 Broadcast announcement",count:announcements.length},
-      h(BroadcastSection,{drivers:drivers,act:act,author:identity.name||"Dispatch",announcements:announcements})),
-    h(Section,{title:"👤 Managers (who can assign)",count:managers.length},
+  var __items=[
+    {key:"alerts",node:h(Section,{title:"🔔 Manager alerts",alwaysOpen:true},
+      h(ManagerAlerts,null))},
+    {key:"broadcast",node:h(Section,{title:"📢 Broadcast announcement",count:announcements.length,alwaysOpen:true},
+      h(BroadcastSection,{drivers:drivers,act:act,author:identity.name||"Dispatch",announcements:announcements}))},
+    {key:"managers",node:h(Section,{title:"👤 Managers (who can assign)",count:managers.length},
       h("p",{className:"text-xs text-slate-500"},"These appear in the Manager sign-in list and the Assigned By dropdown."),
       managers.length>0?h("div",{className:"space-y-1.5"},managers.map(function(m){
         return h("div",{key:m.id,className:"flex items-center gap-2 bg-slate-50 rounded-lg px-3 py-2"},
@@ -1591,9 +1660,9 @@ function ManageTab(props){
       h("div",{className:"space-y-2 border-t border-slate-100 pt-2"},
         h("input",{value:mName,onChange:function(e){setMName(e.target.value);},className:"inp",placeholder:"Manager name"}),
         h("input",{value:mPhone,onChange:function(e){setMPhone(e.target.value);},className:"inp",placeholder:"Phone (so drivers can call)",inputMode:"tel"}),
-        h("button",{onClick:addManager,disabled:!mName.trim(),className:"bg-teal-600 disabled:opacity-40 text-white rounded-lg px-3 py-2 text-sm font-medium"},"＋ Add manager"))),
+        h("button",{onClick:addManager,disabled:!mName.trim(),className:"bg-teal-600 disabled:opacity-40 text-white rounded-lg px-3 py-2 text-sm font-medium"},"＋ Add manager")))},
 
-    h(Section,{title:"👷 Crews",count:crews.length},
+    {key:"crews",node:h(Section,{title:"👷 Crews",count:crews.length},
       h("p",{className:"text-xs text-slate-500"},"Your active crew names. These appear in the Crew Name dropdown on each assignment."),
       crews.length>0?h("div",{className:"flex flex-wrap gap-1.5"},crews.map(function(c){
         return h("div",{key:c,className:"flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5"},
@@ -1602,9 +1671,9 @@ function ManageTab(props){
       })):h("p",{className:"text-xs text-slate-400"},"No crews added yet."),
       h("div",{className:"flex gap-2 border-t border-slate-100 pt-2"},
         h("input",{value:cName,onChange:function(e){setCName(e.target.value);},onKeyDown:function(e){if(e.key==="Enter")addCrew();},className:"inp flex-1",placeholder:"Crew name"}),
-        h("button",{onClick:addCrew,disabled:!cName.trim(),className:"bg-teal-600 disabled:opacity-40 text-white rounded-lg px-3 py-2 text-sm font-medium whitespace-nowrap"},"＋ Add"))),
+        h("button",{onClick:addCrew,disabled:!cName.trim(),className:"bg-teal-600 disabled:opacity-40 text-white rounded-lg px-3 py-2 text-sm font-medium whitespace-nowrap"},"＋ Add")))},
 
-    h(Section,{title:"🚚 Trucks",count:trucks.length},
+    {key:"trucks",node:h(Section,{title:"🚚 Trucks",count:trucks.length},
       h("p",{className:"text-xs text-slate-500"},"Your trucks (unit numbers). These appear in the Truck dropdown on each assignment."),
       trucks.length>0?h("div",{className:"flex flex-wrap gap-1.5"},trucks.map(function(c){
         return h("div",{key:c,className:"flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5"},
@@ -1613,9 +1682,9 @@ function ManageTab(props){
       })):h("p",{className:"text-xs text-slate-400"},"No trucks added yet."),
       h("div",{className:"flex gap-2 border-t border-slate-100 pt-2"},
         h("input",{value:tkName,onChange:function(e){setTkName(e.target.value);},onKeyDown:function(e){if(e.key==="Enter")addTruck();},className:"inp flex-1",placeholder:"Truck / unit #"}),
-        h("button",{onClick:addTruck,disabled:!tkName.trim(),className:"bg-teal-600 disabled:opacity-40 text-white rounded-lg px-3 py-2 text-sm font-medium whitespace-nowrap"},"＋ Add"))),
+        h("button",{onClick:addTruck,disabled:!tkName.trim(),className:"bg-teal-600 disabled:opacity-40 text-white rounded-lg px-3 py-2 text-sm font-medium whitespace-nowrap"},"＋ Add")))},
 
-    h(Section,{title:"🚛 Trailers",count:trailers.length},
+    {key:"trailers",node:h(Section,{title:"🚛 Trailers",count:trailers.length},
       h("p",{className:"text-xs text-slate-500"},"Your trailers (e.g. RGN, Stepdeck, Lowboy + unit #). These appear in the Trailer dropdown on each assignment."),
       trailers.length>0?h("div",{className:"flex flex-wrap gap-1.5"},trailers.map(function(c){
         return h("div",{key:c,className:"flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5"},
@@ -1624,9 +1693,9 @@ function ManageTab(props){
       })):h("p",{className:"text-xs text-slate-400"},"No trailers added yet."),
       h("div",{className:"flex gap-2 border-t border-slate-100 pt-2"},
         h("input",{value:trName,onChange:function(e){setTrName(e.target.value);},onKeyDown:function(e){if(e.key==="Enter")addTrailer();},className:"inp flex-1",placeholder:"Trailer"}),
-        h("button",{onClick:addTrailer,disabled:!trName.trim(),className:"bg-teal-600 disabled:opacity-40 text-white rounded-lg px-3 py-2 text-sm font-medium whitespace-nowrap"},"＋ Add"))),
+        h("button",{onClick:addTrailer,disabled:!trName.trim(),className:"bg-teal-600 disabled:opacity-40 text-white rounded-lg px-3 py-2 text-sm font-medium whitespace-nowrap"},"＋ Add")))},
 
-    h(Section,{title:"📦 Equipment Type",count:equipmentTypes.length},
+    {key:"equip",node:h(Section,{title:"📦 Equipment Type",count:equipmentTypes.length},
       h("p",{className:"text-xs text-slate-500"},"Everything you haul (e.g. light tower, frac pump, sand silo). These appear in the Equipment Type dropdown on each move."),
       equipmentTypes.length>0?h("div",{className:"flex flex-wrap gap-1.5"},equipmentTypes.map(function(c){
         return h("div",{key:c,className:"flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5"},
@@ -1635,9 +1704,9 @@ function ManageTab(props){
       })):h("p",{className:"text-xs text-slate-400"},"No equipment types added yet."),
       h("div",{className:"flex gap-2 border-t border-slate-100 pt-2"},
         h("input",{value:eqName,onChange:function(e){setEqName(e.target.value);},onKeyDown:function(e){if(e.key==="Enter")addEquip();},className:"inp flex-1",placeholder:"Equipment name"}),
-        h("button",{onClick:addEquip,disabled:!eqName.trim(),className:"bg-teal-600 disabled:opacity-40 text-white rounded-lg px-3 py-2 text-sm font-medium whitespace-nowrap"},"＋ Add"))),
+        h("button",{onClick:addEquip,disabled:!eqName.trim(),className:"bg-teal-600 disabled:opacity-40 text-white rounded-lg px-3 py-2 text-sm font-medium whitespace-nowrap"},"＋ Add")))},
 
-    h(Section,{title:"📍 Yard / Vendor Locations",count:places.length},
+    {key:"places",node:h(Section,{title:"📍 Yard / Vendor Locations",count:places.length},
       h("p",{className:"text-xs text-slate-500"},"Fixed locations (yards, vendors) with their coordinates or pin-drop link. When making an assignment you can quick-fill a pickup or drop-off from this list."),
       places.length>0?h("div",{className:"space-y-1.5"},places.map(function(p){
         return h("div",{key:p.name,className:"flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5"},
@@ -1649,9 +1718,9 @@ function ManageTab(props){
       h("div",{className:"space-y-2 border-t border-slate-100 pt-2"},
         h("input",{value:plName,onChange:function(e){setPlName(e.target.value);},className:"inp",placeholder:"Location name (e.g. Stanton Yard)"}),
         h("input",{value:plCoords,onChange:function(e){setPlCoords(e.target.value);},onKeyDown:function(e){if(e.key==="Enter")addPlace();},className:"inp",placeholder:"Coordinates or pin drop link"}),
-        h("button",{onClick:addPlace,disabled:!plName.trim(),className:"bg-teal-600 disabled:opacity-40 text-white rounded-lg px-3 py-2 text-sm font-medium whitespace-nowrap"},"＋ Add location"))),
+        h("button",{onClick:addPlace,disabled:!plName.trim(),className:"bg-teal-600 disabled:opacity-40 text-white rounded-lg px-3 py-2 text-sm font-medium whitespace-nowrap"},"＋ Add location")))},
 
-    h(Section,{title:"💵 Heavy Haul Driver Day Rate",count:dayRates.length?fmtMoney(curRate):""},
+    {key:"dayrate",node:h(Section,{title:"💵 Heavy Haul Driver Day Rate",count:dayRates.length?fmtMoney(curRate):""},
       h("p",{className:"text-xs text-slate-500"},"What each Heavy Haul driver earns per day worked. The Day Rate tab uses this to total driver pay."),
       h("div",{className:"flex items-baseline gap-2"},
         h("span",{className:"text-2xl font-bold text-slate-800"},dayRates.length?fmtMoney(curRate):"—"),
@@ -1668,19 +1737,25 @@ function ManageTab(props){
           return h("div",{key:i,className:"flex items-center justify-between text-xs text-slate-600"},
             h("span",{className:"font-medium"},fmtMoney(rt.rate)+" / day"),
             h("span",{className:"text-slate-400"},rt.from==="1900-01-01"?"from the start":("from "+fmtMDY(rt.from))));
-        })):null),
+        })):null)},
 
-    h(Section,{title:"🔑 Reset a login password"},
+    {key:"resetpw",node:h(Section,{title:"🔑 Reset a login password",alwaysOpen:true},
       h("p",{className:"text-xs text-slate-500"},"If someone forgets their password, reset it here. They'll create a new one the next time they sign in."),
       h("select",{value:resetId,onChange:function(e){setResetId(e.target.value);},className:"inp"},
         h("option",{value:""},"— select person —"),
         people.map(function(p){return h("option",{key:p.id,value:p.id},p.label);})),
-      h("button",{onClick:resetPw,disabled:!resetId,className:"bg-slate-900 disabled:opacity-40 text-white rounded-lg px-4 py-2 text-sm font-medium"},"Reset password")),
+      h("button",{onClick:resetPw,disabled:!resetId,className:"bg-slate-900 disabled:opacity-40 text-white rounded-lg px-4 py-2 text-sm font-medium"},"Reset password"))},
 
-    h(Section,{title:"📋 Activity log",count:auditLog.length},
+    {key:"activity",node:h(Section,{title:"📋 Activity log",count:auditLog.length},
       h("p",{className:"text-xs text-slate-500"},"A running record of who assigned, edited, archived, or flagged loads — newest first."),
-      h("button",{onClick:function(){setShowLog(true);},className:"bg-slate-100 text-slate-700 rounded-lg px-4 py-2 text-sm font-medium"},"View activity log"+(auditLog.length?" ("+auditLog.length+")":""))),
+      h("button",{onClick:function(){setShowLog(true);},className:"bg-slate-100 text-slate-700 rounded-lg px-4 py-2 text-sm font-medium"},"View activity log"+(auditLog.length?" ("+auditLog.length+")":"")))},
 
+    {key:"resetall",node:h(Section,{title:"⚠️ Reset all data",danger:true},
+      h("p",{className:"text-xs text-slate-500"},"Permanently clears drivers, schedule, loads, managers, and passwords for the whole team."),
+      h("button",{onClick:function(){if(confirm("Clear ALL dispatch data for everyone? This cannot be undone."))act(function(){return db.wipe();},"All data cleared");},className:"border-2 border-red-200 text-red-600 rounded-lg px-4 py-2 text-sm font-medium"},"Clear everything"))}
+  ];
+  return h("div",{className:"space-y-3 max-w-md"},
+    h(SortableSections,{items:__items,storageKey:"hhd_manage_order"}),
     showLog&&h(Modal,{title:"Activity Log",onClose:function(){setShowLog(false);}},
       auditLog.length===0?h(Empty,{msg:"No activity recorded yet."}):
       h("div",{className:"space-y-1.5 max-h-[60vh] overflow-y-auto"},
@@ -1689,11 +1764,7 @@ function ManageTab(props){
             h("div",{className:"text-sm text-slate-800"},h("span",{className:"font-semibold"},e.actor||"?")," · ",e.action),
             e.detail?h("div",{className:"text-xs text-slate-500"},e.detail):null,
             h("div",{className:"text-[11px] text-slate-400"},e.at?new Date(e.at).toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}):""));
-        }))),
-
-    h(Section,{title:"⚠️ Reset all data",danger:true},
-      h("p",{className:"text-xs text-slate-500"},"Permanently clears drivers, schedule, loads, managers, and passwords for the whole team."),
-      h("button",{onClick:function(){if(confirm("Clear ALL dispatch data for everyone? This cannot be undone."))act(function(){return db.wipe();},"All data cleared");},className:"border-2 border-red-200 text-red-600 rounded-lg px-4 py-2 text-sm font-medium"},"Clear everything")));
+        }))));
 }
 
 // ---- LocLine ----
