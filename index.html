@@ -128,16 +128,22 @@ function urlB64ToUint8Array(b64){
   return out;
 }
 function subscribeToPush(driverId){
-  if(!driverId||!("serviceWorker"in navigator)||!("PushManager"in window))return;
-  navigator.serviceWorker.ready.then(function(reg){
+  if(!driverId)return Promise.resolve({ok:false,reason:"no-driver"});
+  if(!("serviceWorker"in navigator)||!("PushManager"in window))return Promise.resolve({ok:false,reason:"unsupported"});
+  if(("Notification"in window)&&Notification.permission!=="granted")return Promise.resolve({ok:false,reason:"permission"});
+  var ready=Promise.race([navigator.serviceWorker.ready,new Promise(function(_,rej){setTimeout(function(){rej(new Error("sw-timeout"));},9000);})]);
+  return ready.then(function(reg){
     return reg.pushManager.getSubscription().then(function(existing){
       return existing||reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:urlB64ToUint8Array(VAPID_PUBLIC)});
     });
   }).then(function(sub){
-    if(!sub||!sb)return;
+    if(!sub||!sb)return {ok:false,reason:"no-sub"};
     var j=sub.toJSON();
-    if(j&&j.keys)return db.savePushSub(driverId,j.endpoint,j.keys.p256dh,j.keys.auth);
-  }).catch(function(e){});
+    if(!(j&&j.keys))return {ok:false,reason:"no-keys"};
+    return Promise.resolve(db.savePushSub(driverId,j.endpoint,j.keys.p256dh,j.keys.auth))
+      .then(function(r){if(r&&r.error)return {ok:false,reason:"save-failed"};return {ok:true};})
+      .catch(function(){return {ok:false,reason:"save-failed"};});
+  }).catch(function(e){return {ok:false,reason:(e&&e.message)||"error"};});
 }
 
 var MOVE_TYPES = [
@@ -313,6 +319,7 @@ var db = {
       sb.from("loads").select("*").order("created_at"),
       sb.from("settings").select("*"),
       sb.from("audit_log").select("*").order("at",{ascending:false}).limit(300),
+      sb.from("push_subscriptions").select("driver_id"),
     ]);
     if(res[0].error) throw new Error("drivers: "+res[0].error.message);
     if(res[2].error) throw new Error("schedule: "+res[2].error.message);
@@ -330,10 +337,12 @@ var db = {
       if(r.key==="places"){try{places=JSON.parse(r.value)||[];}catch(e){places=[];}}
     });
     dayRates.sort(function(a,b){return (a.from||"").localeCompare(b.from||"");});
+    var pushDriverIds=[]; var pushKnown=false;
+    if(res[6]&&!res[6].error){pushKnown=true;(res[6].data||[]).forEach(function(r){if(r.driver_id&&pushDriverIds.indexOf(r.driver_id)===-1)pushDriverIds.push(r.driver_id);});}
     return {
       drivers:res[0].data||[], managers:res[1].data||[],
       schedule:schedule, loads:(res[3].data||[]).map(rowToLoad), passwords:passwords, crews:crews, dayRates:dayRates, trucks:trucks, trailers:trailers, equipmentTypes:equipmentTypes, places:places,
-      auditLog:(res[5]&&res[5].data)||[]
+      auditLog:(res[5]&&res[5].data)||[], pushDriverIds:pushDriverIds, pushKnown:pushKnown
     };
   },
   getPw: async function(id){
@@ -597,6 +606,8 @@ function App(){
   var s19=useState(isOnline()); var online=s19[0]; var setOnline=s19[1];
   var s20=useState(function(){return readOutbox();}); var pending=s20[0]; var setPending=s20[1];
   var s21=useState(function(){try{var v=localStorage.getItem("hhd_cab");return v===null?true:v==="1";}catch(e){return true;}}); var cabMode=s21[0]; var setCabMode=s21[1];
+  var s22=useState([]); var pushIds=s22[0]; var setPushIds=s22[1];
+  var s23=useState(false); var pushKnown=s23[0]; var setPushKnown=s23[1];
   function toggleCab(){var v=!cabMode;setCabMode(v);try{localStorage.setItem("hhd_cab",v?"1":"0");}catch(e){}}
 
   function showToast(m){setToast(m);setTimeout(function(){setToast("");},1800);}
@@ -635,6 +646,7 @@ function App(){
       setDrivers(d.drivers); setManagers(d.managers);
       setSchedule(d.schedule); setLoads(applyOutbox(d.loads));
       setPasswords(d.passwords); setCrews(d.crews||[]); setDayRates(d.dayRates||[]); setTrucks(d.trucks||[]); setTrailers(d.trailers||[]); setAuditLog(d.auditLog||[]); setEquipmentTypes(d.equipmentTypes||[]); setPlaces(d.places||[]); setDbError("");
+      if(d.pushKnown){setPushIds(d.pushDriverIds||[]);setPushKnown(true);}
       setOnline(true); everLoaded.current=true;
       writeCache({drivers:d.drivers,managers:d.managers,schedule:d.schedule,loads:d.loads,crews:d.crews||[],dayRates:d.dayRates||[],trucks:d.trucks||[],trailers:d.trailers||[],equipmentTypes:d.equipmentTypes||[],places:d.places||[],auditLog:d.auditLog||[]});
       drainOutbox();
@@ -742,7 +754,7 @@ function App(){
         ?("📴 Offline — showing last synced data"+(pending.length>0?" · "+pending.length+" change"+(pending.length!==1?"s":"")+" will sync when you're back online":""))
         :("🔄 Syncing "+pending.length+" change"+(pending.length!==1?"s":"")+"…")):null,
     h("main",{className:"max-w-6xl mx-auto p-3"},
-      isDispatch&&view==="dispatch"&&h(DispatchBoard,{drivers:drivers,loads:loads,schedule:schedule,managers:managers,crews:crews,trucks:trucks,trailers:trailers,equipmentTypes:equipmentTypes,places:places,driverName:driverName,act:act,audit:audit}),
+      isDispatch&&view==="dispatch"&&h(DispatchBoard,{drivers:drivers,loads:loads,schedule:schedule,managers:managers,crews:crews,trucks:trucks,trailers:trailers,equipmentTypes:equipmentTypes,places:places,driverName:driverName,act:act,audit:audit,pushIds:pushIds,pushKnown:pushKnown}),
       isDispatch&&view==="schedule"&&h(ScheduleBoard,{drivers:drivers,schedule:schedule,act:act}),
       isDispatch&&view==="dayrate"&&h(DayRate,{drivers:drivers,schedule:schedule,loads:loads,dayRates:dayRates,showToast:showToast}),
       isDispatch&&view==="drivers"&&h(DriversTab,{drivers:drivers,act:act}),
@@ -754,7 +766,7 @@ function App(){
 
 // ---- DispatchBoard ----
 function DispatchBoard(props){
-  var drivers=props.drivers,loads=props.loads,schedule=props.schedule,managers=props.managers,crews=props.crews,trucks=props.trucks,trailers=props.trailers,equipmentTypes=props.equipmentTypes,places=props.places,driverName=props.driverName,act=props.act,audit=props.audit||function(){};
+  var drivers=props.drivers,loads=props.loads,schedule=props.schedule,managers=props.managers,crews=props.crews,trucks=props.trucks,trailers=props.trailers,equipmentTypes=props.equipmentTypes,places=props.places,driverName=props.driverName,act=props.act,audit=props.audit||function(){},pushIds=props.pushIds||[],pushKnown=props.pushKnown;
   var s1=useState(todayISO()); var date=s1[0]; var setDate=s1[1];
   var s2=useState(null); var editing=s2[0]; var setEditing=s2[1];
   var s3=useState(""); var q=s3[0]; var setQ=s3[1];
@@ -949,12 +961,12 @@ function DispatchBoard(props){
           h("button",{onClick:function(){restore(l);},className:"text-xs bg-teal-50 text-teal-700 border border-teal-200 rounded-lg px-2.5 py-1.5 font-medium shrink-0"},"Restore"),
           h("button",{onClick:function(){hardDelete(l);},className:"text-xs text-red-500 shrink-0 px-1"},"Delete"));
       }))),
-    editing&&h(LoadModal,{drivers:drivers,schedule:schedule,managers:managers,crews:crews,trucks:trucks,trailers:trailers,equipmentTypes:equipmentTypes,places:places,allLoads:active,load:editing,onSave:saveLoad,onDelete:delLoad,onHardDelete:delForever,onClose:function(){setEditing(null);}}));
+    editing&&h(LoadModal,{drivers:drivers,schedule:schedule,managers:managers,crews:crews,trucks:trucks,trailers:trailers,equipmentTypes:equipmentTypes,places:places,allLoads:active,load:editing,pushIds:pushIds,pushKnown:pushKnown,onSave:saveLoad,onDelete:delLoad,onHardDelete:delForever,onClose:function(){setEditing(null);}}));
 }
 
 // ---- LoadModal (multi-driver) ----
 function LoadModal(props){
-  var drivers=props.drivers,schedule=props.schedule,managers=props.managers,crews=props.crews||[],trucks=props.trucks||[],trailers=props.trailers||[],equipmentTypes=props.equipmentTypes||[],places=props.places||[],allLoads=props.allLoads||[],load=props.load,onSave=props.onSave,onDelete=props.onDelete,onHardDelete=props.onHardDelete,onClose=props.onClose;
+  var drivers=props.drivers,schedule=props.schedule,managers=props.managers,crews=props.crews||[],trucks=props.trucks||[],trailers=props.trailers||[],equipmentTypes=props.equipmentTypes||[],places=props.places||[],allLoads=props.allLoads||[],load=props.load,onSave=props.onSave,onDelete=props.onDelete,onHardDelete=props.onHardDelete,onClose=props.onClose,pushIds=props.pushIds||[],pushKnown=props.pushKnown;
   var isNew=!load.id;
   var existingMoves=getMoves(load);
   var s1=useState({startFrom:load.startFrom||"",startTime:load.startTime||"",driverIds:load.driverId?[load.driverId]:[""],date:load.date||todayISO(),moveType:load.moveType||"maxxim",assignedById:load.assignedBy?load.assignedBy.id||"":"",crewName:load.crewName||"",truck:load.truck||"",trailer:load.trailer||"",notes:load.notes||"",permitUrl:load.permitUrl||"",permitName:load.permitName||"",moves:existingMoves.length?existingMoves:[blankMove()]});
@@ -1021,14 +1033,19 @@ function LoadModal(props){
           return h("div",{key:idx,className:"flex items-center gap-2"},
             h("select",{value:dId,onChange:function(e){setDriverId(idx,e.target.value);},className:"inp flex-1"},
               h("option",{value:""},"— select driver —"),
-              scheduledFirst.map(function(d){return h("option",{key:d.id,value:d.id},d.name+(schedule[d.id+"|"+f.date]?" ✓ scheduled":""));})),
+              scheduledFirst.map(function(d){return h("option",{key:d.id,value:d.id},d.name+(schedule[d.id+"|"+f.date]?" ✓ scheduled":"")+(pushKnown?(pushIds.indexOf(d.id)!==-1?" · 🔔 alerts on":" · no alerts"):""));})),
             sel&&sel.phone?h("a",{href:"tel:"+sel.phone,className:"text-teal-700 shrink-0",title:"Call "+sel.name},"📞"):null,
             isNew&&f.driverIds.length>1?h("button",{onClick:function(){removeDriverRow(idx);},className:"text-red-400 shrink-0 p-1"},"✕"):null);
         }),
         !isNew?((filledDriverIds[0]&&filledDriverIds[0]!==load.driverId)
           ?h("div",{className:"text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5 font-medium"},"↪ Reassigning to "+((drivers.find(function(d){return d.id===filledDriverIds[0];})||{}).name||"new driver")+" — they'll be notified and the load keeps all its details and progress.")
           :h("div",{className:"text-[11px] text-slate-500"},"To reassign this load, just pick a different driver — all details and progress carry over.")):null,
-        isNew&&filledDriverIds.length>1?h("div",{className:"text-[11px] text-teal-700 bg-teal-50 rounded-lg px-2.5 py-1.5"},"✓ Will create "+filledDriverIds.length+" separate assignments — one per driver"):null),
+        isNew&&filledDriverIds.length>1?h("div",{className:"text-[11px] text-teal-700 bg-teal-50 rounded-lg px-2.5 py-1.5"},"✓ Will create "+filledDriverIds.length+" separate assignments — one per driver"):null,
+        (pushKnown&&filledDriverIds.filter(function(id){return pushIds.indexOf(id)===-1;}).length>0)
+          ?h("div",{className:"text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5"},
+              "🔔 "+filledDriverIds.filter(function(id){return pushIds.indexOf(id)===-1;}).map(function(id){return (drivers.find(function(d){return d.id===id;})||{}).name||"driver";}).join(", ")+
+              " hasn't turned on alerts on their phone yet, so they won't get a push notification. Have them open the app and tap “Turn on alerts.” They'll still see the load when they open the app.")
+          :(pushKnown&&filledDriverIds.length>0?h("div",{className:"text-[11px] text-teal-700"},"🔔 "+(filledDriverIds.length>1?"All selected drivers have alerts on.":"This driver has alerts on — they'll get a push notification.")):null)),
       h(Field,{label:"Assigned By *"},
         managers.length===0
           ?h("p",{className:"text-xs text-red-600 border border-dashed border-red-300 rounded-lg p-2 bg-red-50"},"No managers yet — add them in the Manage tab.")
@@ -1587,12 +1604,32 @@ function MyLoads(props){
   }
   var STATUS_OPTS=[{v:"assigned",l:"Not Started"},{v:"inprogress",l:"In Progress"},{v:"completed",l:"Completed"}];
   var n1=useState(("Notification"in window)?Notification.permission:"unsupported"); var notifPerm=n1[0]; var setNotifPerm=n1[1];
-  function enableAlerts(){if(!("Notification"in window))return;Notification.requestPermission().then(function(p){setNotifPerm(p);if(p==="granted"){notify("Alerts are on ✅","You'll be notified here when a new load is assigned to you.");subscribeToPush(identity.driverId);}});}
+  var n2=useState(""); var subState=n2[0]; var setSubState=n2[1];
+  useEffect(function(){
+    if(notifPerm==="granted"){setSubState(function(s){return s||"working";});subscribeToPush(identity.driverId).then(function(r){setSubState(r&&r.ok?"ready":"failed");});}
+  },[notifPerm]);
+  function enableAlerts(){
+    if(!("Notification"in window))return;
+    setSubState("working");
+    Notification.requestPermission().then(function(p){
+      setNotifPerm(p);
+      if(p==="granted"){
+        subscribeToPush(identity.driverId).then(function(r){
+          setSubState(r&&r.ok?"ready":"failed");
+          if(r&&r.ok)notify("Alerts are on ✅","You'll be notified here when a load is assigned to you.");
+        });
+      } else { setSubState(""); }
+    });
+  }
   function testAlert(){notify("Test alert ✅","Notifications are working on this phone. New assignments will show here.",{url:"./"});}
   return h("div",{className:"space-y-3"},
     ("Notification"in window)
       ? (notifPerm==="granted"
-          ? h("button",{onClick:testAlert,className:"w-full bg-teal-50 border border-teal-200 text-teal-800 rounded-xl p-2.5 text-sm font-medium flex items-center justify-center gap-2"},"🔔 Alerts are on — tap to send a test")
+          ? (subState==="ready"
+              ? h("button",{onClick:testAlert,className:"w-full bg-teal-50 border border-teal-200 text-teal-800 rounded-xl p-2.5 text-sm font-medium flex items-center justify-center gap-2"},"🔔 Alerts are on — tap to send a test")
+              : subState==="working"
+                ? h("div",{className:"w-full bg-slate-50 border border-slate-200 text-slate-500 rounded-xl p-2.5 text-sm font-medium text-center"},"🔔 Finishing alert setup…")
+                : h("button",{onClick:enableAlerts,className:"w-full bg-amber-50 border border-amber-200 text-amber-800 rounded-xl p-3 text-sm font-medium flex items-center justify-center gap-2"},"🔔 Couldn't finish alert setup — tap to retry"))
           : h("button",{onClick:enableAlerts,className:"w-full bg-amber-50 border border-amber-200 text-amber-800 rounded-xl p-3 text-sm font-medium flex items-center justify-center gap-2"},
               notifPerm==="denied"?"🔔 Alerts are blocked — turn on notifications for this app in your phone settings":"🔔 Turn on alerts for new assignments"))
       : null,
