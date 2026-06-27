@@ -391,6 +391,8 @@ var db = {
   chatMessages: function(convId){return sb.from("messages").select("*").eq("conversation_id",convId).order("at",{ascending:true});},
   chatConv:     function(convId){return sb.from("conversations").select("*").eq("id",convId).limit(1);},
   chatSetReads: function(convId,reads){return sb.from("conversations").update({reads:reads}).eq("id",convId);},
+  chatSetDelivered: function(convId,delivered){return sb.from("conversations").update({delivered:delivered}).eq("id",convId);},
+  chatDelete:   async function(convId){ try{await sb.from("messages").delete().eq("conversation_id",convId);}catch(e){} return sb.from("conversations").delete().eq("id",convId); },
   chatCreate:   function(row){return sb.from("conversations").insert(row).select();},
   chatSend:     function(convId,msg){return sb.from("messages").insert(Object.assign({conversation_id:convId},msg));},
   chatTouch:    function(convId,patch){return sb.from("conversations").update(patch).eq("id",convId);},
@@ -697,6 +699,21 @@ function App(){
     document.addEventListener("visibilitychange",onVis);
     return function(){window.removeEventListener("focus",doSub);document.removeEventListener("visibilitychange",onVis);};
   },[identity]);
+  var deliveredMarked=useRef({});
+  useEffect(function(){
+    var mid=identity&&(identity.driverId||identity.id); if(!mid)return;
+    (conversations||[]).forEach(function(c){
+      var ids=c.member_ids||[]; if(ids.indexOf(mid)===-1)return;
+      if(!c.last_at||c.last_sender===mid)return;
+      var del=(c.delivered&&typeof c.delivered==="object")?c.delivered:{};
+      var mine=del[mid]?Date.parse(del[mid]):0;
+      if(Date.parse(c.last_at)>mine&&deliveredMarked.current[c.id]!==c.last_at){
+        deliveredMarked.current[c.id]=c.last_at;
+        var nd=Object.assign({},del); nd[mid]=new Date().toISOString();
+        try{db.chatSetDelivered(c.id,nd);}catch(e){}
+      }
+    });
+  },[conversations,identity]);
   useEffect(function(){
     var ch;
     try{ch=sb.channel("hhd").on("postgres_changes",{event:"*",schema:"public"},function(){refresh(false);}).subscribe();}catch(e){}
@@ -1829,6 +1846,8 @@ function ChatTab(props){
   var a6=useState(""); var gtitle=a6[0]; var setGtitle=a6[1];
   var a7=useState(false); var sending=a7[0]; var setSending=a7[1];
   var a8=useState({}); var reads=a8[0]; var setReads=a8[1];
+  var a9=useState({}); var delivered=a9[0]; var setDelivered=a9[1];
+  var a10=useState([]); var hidden=a10[0]; var setHidden=a10[1];
   var endRef=useRef(null);
   var people=drivers.map(function(d){return {id:d.id,name:d.name,role:"driver"};})
     .concat(managers.map(function(m){return {id:m.id,name:m.name,role:"manager"};}))
@@ -1844,7 +1863,8 @@ function ChatTab(props){
     Promise.resolve(db.chatConv(cid)).then(function(cr){
       var conv=(cr&&cr.data&&cr.data[0])||null; if(!conv)return;
       var rd=(conv.reads&&typeof conv.reads==="object")?conv.reads:{};
-      setReads(rd);
+      var dv=(conv.delivered&&typeof conv.delivered==="object")?conv.delivered:{};
+      setReads(rd); setDelivered(dv);
       if(latestAt&&meId){
         var mine=rd[meId]?Date.parse(rd[meId]):0;
         if(Date.parse(latestAt)>mine){
@@ -1858,7 +1878,15 @@ function ChatTab(props){
     var list=(r&&r.data)||[]; setMsgs(list);
     syncReads(cid,list.length?list[list.length-1].at:null);
   }).catch(function(){});}
-  function open(c){setActive(c);markRead(c);setMsgs([]);setReads(c.reads||{});fetchMsgs(c.id);}
+  function open(c){setActive(c);markRead(c);setMsgs([]);setReads(c.reads||{});setDelivered(c.delivered||{});fetchMsgs(c.id);}
+  function delConv(c){
+    if(!c||!c.id)return;
+    if(!window.confirm(c.is_group?"Delete this group chat for everyone? This can't be undone.":"Delete this conversation for everyone? This can't be undone."))return;
+    setHidden(function(h){return h.concat([c.id]);});
+    setActive(null);
+    try{db.chatDelete(c.id);}catch(e){}
+  }
+  function canDelete(c){return !c.is_group?true:(meRole==="manager"||c.created_by===meId);}
   useEffect(function(){
     if(!active)return;
     fetchMsgs(active.id);
@@ -1906,13 +1934,24 @@ function ChatTab(props){
     }).catch(function(){setNewMode(false);});
   }
 
-  function receiptFor(conv,msg){
+  function statusFor(conv,msg){
     var others=(conv.members||[]).filter(function(m){return m.id!==meId;});
-    var readers=others.filter(function(m){var t=reads[m.id]?Date.parse(reads[m.id]):0;return t>=Date.parse(msg.at);});
-    if(readers.length===0)return null;
-    if(!conv.is_group){var t=reads[others[0].id];return "Read "+chatTime(t);}
-    if(readers.length===others.length)return "Read by everyone";
-    return "Read by "+readers.map(function(m){return m.name;}).join(", ");
+    if(others.length===0)return {label:"Sent",time:msg.at,cls:"text-slate-400"};
+    var mAt=Date.parse(msg.at);
+    var readers=others.filter(function(m){return reads[m.id]&&Date.parse(reads[m.id])>=mAt;});
+    if(readers.length){
+      if(!conv.is_group)return {label:"Read",time:reads[others[0].id],cls:"text-teal-600"};
+      if(readers.length===others.length)return {label:"Read by everyone",time:null,cls:"text-teal-600"};
+      return {label:"Read by "+readers.map(function(m){return m.name;}).join(", "),time:null,cls:"text-teal-600"};
+    }
+    var got=others.filter(function(m){return delivered[m.id]&&Date.parse(delivered[m.id])>=mAt;});
+    if(got.length){
+      if(!conv.is_group)return {label:"Delivered",time:delivered[others[0].id],cls:"text-slate-400"};
+      if(got.length===others.length)return {label:"Delivered",time:null,cls:"text-slate-400"};
+      return {label:"Delivered to "+got.map(function(m){return m.name;}).join(", "),time:null,cls:"text-slate-400"};
+    }
+    var pending=String(msg.id||"").indexOf("tmp-")===0;
+    return {label:pending?"Sending…":"Sent",time:pending?null:msg.at,cls:"text-slate-400"};
   }
 
   if(!meId)return h("div",{className:"bg-white rounded-xl p-4 shadow-sm text-sm text-slate-500"},"To use chat, sign in by selecting your name from the Manager list (the generic \"Continue as Manager\" option can't be messaged).");
@@ -1922,24 +1961,27 @@ function ChatTab(props){
       h("div",{className:"flex items-center gap-2 pb-2 border-b border-slate-200"},
         h("button",{onClick:function(){setActive(null);},className:"text-slate-500 text-sm px-1 font-medium"},"‹ Back"),
         h("div",{className:"w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold "+(active.is_group?"bg-amber-100 text-amber-700":"bg-teal-100 text-teal-700")},active.is_group?"👥":chatInitials(convName(active))),
-        h("div",{className:"min-w-0"},
+        h("div",{className:"min-w-0 flex-1"},
           h("div",{className:"font-semibold text-slate-800 truncate"},convName(active)),
-          active.is_group?h("div",{className:"text-[11px] text-slate-400 truncate"},(active.members||[]).map(function(m){return m.id===meId?"You":m.name;}).join(", ")):null)),
+          active.is_group?h("div",{className:"text-[11px] text-slate-400 truncate"},(active.members||[]).map(function(m){return m.id===meId?"You":m.name;}).join(", ")):null),
+        canDelete(active)?h("button",{onClick:function(){delConv(active);},className:"text-slate-400 hover:text-red-500 text-sm shrink-0 px-2 py-1",title:"Delete chat"},"🗑"):null),
       h("div",{className:"flex-1 overflow-y-auto py-3 space-y-1.5"},
         msgs.length===0?h("div",{className:"text-center text-sm text-slate-400 py-6"},"No messages yet. Say hello 👋"):
         (function(){var myLast=-1;msgs.forEach(function(m,i){if(m.sender_id===meId)myLast=i;});return msgs.map(function(m,i){
           var mine=m.sender_id===meId;
           var prev=msgs[i-1];
           var showDay=!prev||(function(){try{return new Date(prev.at).toDateString()!==new Date(m.at).toDateString();}catch(e){return false;}})();
-          var rcpt=(mine&&i===myLast)?receiptFor(active,m):null;
+          var isMyLast=mine&&i===myLast;
+          var st=isMyLast?statusFor(active,m):null;
           return h(Fragment,{key:m.id||i},
             showDay?h("div",{className:"text-center text-[11px] text-slate-400 my-1.5"},chatDay(m.at)):null,
             h("div",{className:"flex "+(mine?"justify-end":"justify-start")},
               h("div",{className:"max-w-[80%]"},
                 (!mine&&active.is_group)?h("div",{className:"text-[11px] text-slate-500 mb-0.5 ml-1 font-medium"},m.sender_name||"Someone"):null,
                 h("div",{className:(mine?"bg-teal-600 text-white":"bg-white text-slate-800 border border-slate-200")+" rounded-2xl px-3 py-2 text-sm whitespace-pre-wrap break-words shadow-sm"},m.text),
-                h("div",{className:"text-[10px] text-slate-400 mt-0.5 "+(mine?"text-right mr-1":"ml-1")},chatTime(m.at)),
-                rcpt?h("div",{className:"text-[10px] text-teal-600 font-medium text-right mr-1"},"✓✓ "+rcpt):null)));
+                st
+                  ?h("div",{className:"text-[10px] mt-0.5 text-right mr-1 font-medium "+st.cls},st.label+(st.time?" "+chatTime(st.time):""))
+                  :h("div",{className:"text-[10px] text-slate-400 mt-0.5 "+(mine?"text-right mr-1":"ml-1")},chatTime(m.at)))));
         });})(),
         h("div",{ref:endRef})),
       h("div",{className:"pt-2 border-t border-slate-200"},
@@ -1979,9 +2021,10 @@ function ChatTab(props){
     h("div",{className:"flex items-center gap-2"},
       h("h2",{className:"font-bold text-slate-800 flex-1"},"Chat"),
       h("button",{onClick:function(){setNewMode(true);},className:"bg-teal-600 text-white rounded-lg px-3 py-1.5 text-sm font-semibold"},"＋ New chat")),
-    conversations.length===0?h(Empty,{msg:"No conversations yet. Tap New chat to message someone."}):
+    (function(){var visible=conversations.filter(function(c){return hidden.indexOf(c.id)===-1;});
+    return visible.length===0?h(Empty,{msg:"No conversations yet. Tap New chat to message someone."}):
     h("div",{className:"space-y-2"},
-      conversations.map(function(c){
+      visible.map(function(c){
         var un=unread(c);
         return h("button",{key:c.id,onClick:function(){open(c);},className:"w-full flex items-center gap-3 bg-white rounded-xl p-3 shadow-sm text-left"},
           h("div",{className:"w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold shrink-0 "+(c.is_group?"bg-amber-100 text-amber-700":"bg-teal-100 text-teal-700")},c.is_group?"👥":chatInitials(convName(c))),
@@ -1992,7 +2035,7 @@ function ChatTab(props){
             h("div",{className:"flex items-center gap-2"},
               h("span",{className:"text-xs truncate flex-1 "+(un?"text-slate-800 font-semibold":"text-slate-500")},(c.last_sender===meId?"You: ":"")+(c.last_text||"No messages yet")),
               un?h("span",{className:"w-2.5 h-2.5 rounded-full bg-amber-400 shrink-0"}):null)));
-      })));
+      }));})());
 }
 function CommentThread(props){
   var comments=props.comments||[];
