@@ -389,6 +389,8 @@ var db = {
   savePushSub:  function(driverId,endpoint,p256dh,auth){return sb.from("push_subscriptions").upsert({driver_id:driverId,endpoint:endpoint,p256dh:p256dh,auth:auth},{onConflict:"endpoint"});},
   addAnnouncement: function(author,text){return sb.from("announcements").insert({author:author||"",text:text||""});},
   chatMessages: function(convId){return sb.from("messages").select("*").eq("conversation_id",convId).order("at",{ascending:true});},
+  chatConv:     function(convId){return sb.from("conversations").select("*").eq("id",convId).limit(1);},
+  chatSetReads: function(convId,reads){return sb.from("conversations").update({reads:reads}).eq("id",convId);},
   chatCreate:   function(row){return sb.from("conversations").insert(row).select();},
   chatSend:     function(convId,msg){return sb.from("messages").insert(Object.assign({conversation_id:convId},msg));},
   chatTouch:    function(convId,patch){return sb.from("conversations").update(patch).eq("id",convId);},
@@ -686,8 +688,9 @@ function App(){
     return function(){window.removeEventListener("online",onOn);window.removeEventListener("offline",onOff);};
   },[refresh]);
   useEffect(function(){
-    if(!(identity&&identity.role==="driver"))return;
-    function doSub(){if(("Notification"in window)&&Notification.permission==="granted")subscribeToPush(identity.driverId);}
+    var myPushId=identity&&(identity.driverId||identity.id);
+    if(!myPushId)return;
+    function doSub(){if(("Notification"in window)&&Notification.permission==="granted")subscribeToPush(myPushId);}
     doSub();
     function onVis(){if(!document.hidden)doSub();}
     window.addEventListener("focus",doSub);
@@ -792,7 +795,7 @@ function App(){
       isDispatch&&view==="dayrate"&&h(DayRate,{drivers:drivers,schedule:schedule,loads:loads,dayRates:dayRates,showToast:showToast}),
       isDispatch&&view==="drivers"&&h(DriversTab,{drivers:drivers,act:act}),
       isDispatch&&view==="manage"&&h(ManageTab,{managers:managers,drivers:drivers,crews:crews,dayRates:dayRates,trucks:trucks,trailers:trailers,equipmentTypes:equipmentTypes,places:places,auditLog:auditLog,announcements:announcements,identity:identity,act:act,showToast:showToast}),
-      !isDispatch&&view==="myloads"&&h(MyLoads,{identity:identity,loads:loads,act:act,audit:audit,mutateLoad:mutateLoad,meName:driverName(identity.driverId),announcements:announcements}),
+      !isDispatch&&view==="myloads"&&h(MyLoads,{identity:identity,loads:loads,act:act,audit:audit,mutateLoad:mutateLoad,meName:driverName(identity.driverId),announcements:announcements,managers:managers}),
       !isDispatch&&view==="myschedule"&&h(MySchedule,{identity:identity,schedule:schedule,act:act}),
       view==="chat"&&h(ChatTab,{drivers:drivers,managers:managers,conversations:myConvs,meId:meId,meName:meName,meRole:meRole,online:online,loads:loads})),
     toast&&h("div",{className:"fixed bottom-5 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-sm font-medium px-4 py-2.5 rounded-xl shadow-lg z-50 border border-white/10 max-w-[90vw] text-center"},toast));
@@ -1572,14 +1575,16 @@ function SortableSections(props){
         h("div",{className:"flex-1 min-w-0"},it.node));
     }));
 }
-function ManagerAlerts(){
+function ManagerAlerts(props){
+  var meId=props&&props.meId;
   var n1=useState(("Notification"in window)?Notification.permission:"unsupported"); var perm=n1[0]; var setPerm=n1[1];
   var n2=useState(""); var st=n2[0]; var setSt=n2[1];
   var n3=useState(""); var why=n3[0]; var setWhy=n3[1];
   var tried=useRef(false);
   function doSub(){
+    if(!meId){setSt("failed");setWhy("no-id");return;}
     setSt("working");
-    subscribeToPush("mgr:ALL").then(function(r){
+    subscribeToPush(meId).then(function(r){
       if(r&&r.ok){setSt("ready");setWhy("");}
       else{setSt("failed");setWhy((r&&r.reason)||"error");}
     });
@@ -1593,14 +1598,14 @@ function ManagerAlerts(){
   }
   function test(){notify("Manager alert test ✅","You'll be alerted here when a driver flags a problem or delivers a load.",{url:"./"});}
   return h("div",null,
-    h("p",{className:"text-xs text-slate-500 mb-2"},"Get a push notification when any driver flags a problem or marks a load delivered. Turn this on once per device you want alerts on."),
+    h("p",{className:"text-xs text-slate-500 mb-2"},"Get a push notification when a driver flags a problem, marks a load delivered, or sends you a chat message. Turn this on once per device you want alerts on."),
     perm==="unsupported"?h("div",{className:"text-sm text-slate-500"},"This device doesn't support notifications."):
     perm==="granted"
       ? (st==="ready"?h("button",{onClick:test,className:"w-full bg-teal-50 border border-teal-200 text-teal-800 rounded-xl p-2.5 text-sm font-medium"},"🔔 Manager alerts are on — tap to send a test")
         : st==="working"?h("div",{className:"w-full bg-slate-50 border border-slate-200 text-slate-500 rounded-xl p-2.5 text-sm text-center"},"🔔 Finishing setup…")
         : h(Fragment,null,
             h("button",{onClick:enable,className:"w-full bg-amber-50 border border-amber-200 text-amber-800 rounded-xl p-3 text-sm font-medium"},"🔔 Couldn't finish setup — tap to retry"),
-            why?h("p",{className:"text-[11px] text-slate-400 mt-1"},why==="save-failed"?"Couldn't save the subscription — the push_subscriptions table needs the one-time SQL fix (see the file included with this update), then retry.":("Reason: "+why)):null))
+            why?h("p",{className:"text-[11px] text-slate-400 mt-1"},why==="save-failed"?"Couldn't save the subscription — the push_subscriptions table needs the one-time SQL fix (see the file included with this update), then retry.":why==="no-id"?"Sign in by selecting your name from the Manager list (not the generic \"Continue as Manager\") to receive alerts.":("Reason: "+why)):null))
       : h("button",{onClick:enable,className:"w-full bg-amber-50 border border-amber-200 text-amber-800 rounded-xl p-3 text-sm font-medium"},
           perm==="denied"?"🔔 Blocked — enable notifications for this app in your phone/browser settings":"🔔 Turn on manager alerts"));
 }
@@ -1666,7 +1671,7 @@ function ManageTab(props){
   var people = managers.map(function(m){return {id:m.id,label:m.name+" (Manager)"};}).concat(drivers.map(function(d){return {id:d.id,label:d.name+" (Driver)"};}));
   var __items=[
     {key:"alerts",node:h(Section,{title:"🔔 Manager alerts",alwaysOpen:true},
-      h(ManagerAlerts,null))},
+      h(ManagerAlerts,{meId:identity.id}))},
     {key:"broadcast",node:h(Section,{title:"📢 Broadcast announcement",count:announcements.length,alwaysOpen:true},
       h(BroadcastSection,{drivers:drivers,act:act,author:identity.name||"Dispatch",announcements:announcements}))},
     {key:"managers",node:h(Section,{title:"👤 Managers (who can assign)",count:managers.length},
@@ -1823,6 +1828,7 @@ function ChatTab(props){
   var a5=useState({}); var sel=a5[0]; var setSel=a5[1];
   var a6=useState(""); var gtitle=a6[0]; var setGtitle=a6[1];
   var a7=useState(false); var sending=a7[0]; var setSending=a7[1];
+  var a8=useState({}); var reads=a8[0]; var setReads=a8[1];
   var endRef=useRef(null);
   var people=drivers.map(function(d){return {id:d.id,name:d.name,role:"driver"};})
     .concat(managers.map(function(m){return {id:m.id,name:m.name,role:"manager"};}))
@@ -1834,8 +1840,25 @@ function ChatTab(props){
   }
   function markRead(c){try{localStorage.setItem("hhd_chat_read:"+c.id,String(Date.now()));}catch(e){}}
   function unread(c){if(!c.last_at||c.last_sender===meId)return false;var seen=0;try{seen=parseInt(localStorage.getItem("hhd_chat_read:"+c.id)||"0",10)||0;}catch(e){}return Date.parse(c.last_at)>seen;}
-  function fetchMsgs(cid){Promise.resolve(db.chatMessages(cid)).then(function(r){if(r&&r.data)setMsgs(r.data);}).catch(function(){});}
-  function open(c){setActive(c);markRead(c);setMsgs([]);fetchMsgs(c.id);}
+  function syncReads(cid,latestAt){
+    Promise.resolve(db.chatConv(cid)).then(function(cr){
+      var conv=(cr&&cr.data&&cr.data[0])||null; if(!conv)return;
+      var rd=(conv.reads&&typeof conv.reads==="object")?conv.reads:{};
+      setReads(rd);
+      if(latestAt&&meId){
+        var mine=rd[meId]?Date.parse(rd[meId]):0;
+        if(Date.parse(latestAt)>mine){
+          var nrd=Object.assign({},rd); nrd[meId]=new Date().toISOString();
+          setReads(nrd); db.chatSetReads(cid,nrd);
+        }
+      }
+    }).catch(function(){});
+  }
+  function fetchMsgs(cid){Promise.resolve(db.chatMessages(cid)).then(function(r){
+    var list=(r&&r.data)||[]; setMsgs(list);
+    syncReads(cid,list.length?list[list.length-1].at:null);
+  }).catch(function(){});}
+  function open(c){setActive(c);markRead(c);setMsgs([]);setReads(c.reads||{});fetchMsgs(c.id);}
   useEffect(function(){
     if(!active)return;
     fetchMsgs(active.id);
@@ -1846,10 +1869,8 @@ function ChatTab(props){
   function notifyFor(conv,t){
     var others=(conv.members||[]).filter(function(m){return m.id!==meId;});
     var title="💬 "+meName+(conv.is_group&&conv.title?(" · "+conv.title):"");
-    var pingedMgr=false;
     others.forEach(function(m){
-      if(m.role==="driver"){try{db.notifyDriver({driverId:m.id,title:title,body:t,url:"./",tag:"hhd-chat-"+conv.id});}catch(e){}}
-      else if(meRole==="driver"&&!pingedMgr){try{db.notifyDriver({driverId:"mgr:ALL",title:title,body:t,url:"./",tag:"hhd-chat-"+conv.id});}catch(e){}pingedMgr=true;}
+      if(m.id){try{db.notifyDriver({driverId:m.id,title:title,body:t,url:"./",tag:"hhd-chat-"+conv.id});}catch(e){}}
     });
   }
   function send(){
@@ -1885,6 +1906,15 @@ function ChatTab(props){
     }).catch(function(){setNewMode(false);});
   }
 
+  function receiptFor(conv,msg){
+    var others=(conv.members||[]).filter(function(m){return m.id!==meId;});
+    var readers=others.filter(function(m){var t=reads[m.id]?Date.parse(reads[m.id]):0;return t>=Date.parse(msg.at);});
+    if(readers.length===0)return null;
+    if(!conv.is_group){var t=reads[others[0].id];return "Read "+chatTime(t);}
+    if(readers.length===others.length)return "Read by everyone";
+    return "Read by "+readers.map(function(m){return m.name;}).join(", ");
+  }
+
   if(!meId)return h("div",{className:"bg-white rounded-xl p-4 shadow-sm text-sm text-slate-500"},"To use chat, sign in by selecting your name from the Manager list (the generic \"Continue as Manager\" option can't be messaged).");
 
   if(active){
@@ -1897,18 +1927,20 @@ function ChatTab(props){
           active.is_group?h("div",{className:"text-[11px] text-slate-400 truncate"},(active.members||[]).map(function(m){return m.id===meId?"You":m.name;}).join(", ")):null)),
       h("div",{className:"flex-1 overflow-y-auto py-3 space-y-1.5"},
         msgs.length===0?h("div",{className:"text-center text-sm text-slate-400 py-6"},"No messages yet. Say hello 👋"):
-        msgs.map(function(m,i){
+        (function(){var myLast=-1;msgs.forEach(function(m,i){if(m.sender_id===meId)myLast=i;});return msgs.map(function(m,i){
           var mine=m.sender_id===meId;
           var prev=msgs[i-1];
           var showDay=!prev||(function(){try{return new Date(prev.at).toDateString()!==new Date(m.at).toDateString();}catch(e){return false;}})();
+          var rcpt=(mine&&i===myLast)?receiptFor(active,m):null;
           return h(Fragment,{key:m.id||i},
             showDay?h("div",{className:"text-center text-[11px] text-slate-400 my-1.5"},chatDay(m.at)):null,
             h("div",{className:"flex "+(mine?"justify-end":"justify-start")},
               h("div",{className:"max-w-[80%]"},
                 (!mine&&active.is_group)?h("div",{className:"text-[11px] text-slate-500 mb-0.5 ml-1 font-medium"},m.sender_name||"Someone"):null,
                 h("div",{className:(mine?"bg-teal-600 text-white":"bg-white text-slate-800 border border-slate-200")+" rounded-2xl px-3 py-2 text-sm whitespace-pre-wrap break-words shadow-sm"},m.text),
-                h("div",{className:"text-[10px] text-slate-400 mt-0.5 "+(mine?"text-right mr-1":"ml-1")},chatTime(m.at)))));
-        }),
+                h("div",{className:"text-[10px] text-slate-400 mt-0.5 "+(mine?"text-right mr-1":"ml-1")},chatTime(m.at)),
+                rcpt?h("div",{className:"text-[10px] text-teal-600 font-medium text-right mr-1"},"✓✓ "+rcpt):null)));
+        });})(),
         h("div",{ref:endRef})),
       h("div",{className:"pt-2 border-t border-slate-200"},
         !online?h("div",{className:"text-[11px] text-amber-600 mb-1"},"You're offline — reconnect to send."):null,
@@ -1980,7 +2012,8 @@ function MyLoads(props){
   var identity=props.identity,loads=props.loads,act=props.act,audit=props.audit||function(){},mutateLoad=props.mutateLoad||function(id,patch){return act(function(){return db.updateLoad(id,patch);});};
   var meName=props.meName||"A driver";
   var announcements=props.announcements||[];
-  function notifyMgr(title,body){try{db.notifyDriver({driverId:"mgr:ALL",title:title,body:body,url:"./",tag:"hhd-mgr-"+Date.now()});}catch(e){}}
+  var managers=props.managers||[];
+  function notifyMgr(title,body){try{managers.forEach(function(m){if(m&&m.id)db.notifyDriver({driverId:m.id,title:title,body:body,url:"./",tag:"hhd-mgr-"+Date.now()});});}catch(e){}}
   var sCmt=useState({}); var cmtText=sCmt[0]; var setCmtText=sCmt[1];
   var sAnnD=useState(0); var annD=sAnnD[0]; var setAnnD=sAnnD[1];
   function addComment(l){
